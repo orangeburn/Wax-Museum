@@ -1,0 +1,693 @@
+:root {
+  color-scheme: dark;
+  font-family: 'Aptos', 'Segoe UI Variable', 'Trebuchet MS', sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color: oklch(0.94 0 0);
+  background:
+    radial-gradient(circle at top left, oklch(0.28 0 0 / 0.72), transparent 32%),
+    radial-gradient(circle at bottom right, oklch(0.42 0 0 / 0.28), transparent 28%),
+    linear-gradient(135deg, oklch(0.12 0 0), oklch(0.18 0 0));
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  --bg: oklch(0.12 0 0);
+  --panel: color-mix(in oklab, oklch(0.18 0 0), transparent 8%);
+  --panel-soft: color-mix(in oklab, oklch(0.22 0 0), transparent 20%);
+  --text: oklch(0.94 0 0);
+  --muted: oklch(0.74 0 0);
+  --accent: oklch(0.82 0 0);
+  --accent-strong: oklch(0.9 0 0);
+  --warning: oklch(0.66 0 0);
+  --line: color-mix(in oklab, white 20%, transparent 72%);
+  --shadow: 0 24px 80px rgba(2, 10, 20, 0.35);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  min-height: 100vh;
+}
+
+button,
+textarea,
+input {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.shell {
+  width: min(1400px, calc(100vw - 2rem));
+  margin: 0 auto;
+  padding: clamp(1.2rem, 2vw, 2.4rem) 0 3rem;
+}
+
+.eyebrow,
+.panel-kicker {
+  text-transform: uppercase;
+  letter-spacing: 0.24em;
+  font-size: 0.72rem;
+  color: var(--accent-strong);
+  margin: 0 0 0.75rem;
+}
+
+h1,
+h2,
+strong {
+  font-family: 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', serif;
+  font-weight: 600;
+}
+
+h1 {
+  font-size: clamp(2.8rem, 6vw, 6.4rem);
+  line-height: 0.88;
+  margin: 0;
+}
+
+h1 span {
+  display: block;
+  font-size: 0.34em;
+  letter-spacing: 0.36em;
+  margin-top: 1rem;
+  color: var(--muted);
+}
+
+h2 {
+  margin: 0;
+  font-size: clamp(1.4rem, 2vw, 2.1rem);
+}
+
+p {
+  margin: 0;
+}
+
+.lede {
+  font-size: clamp(1.05rem, 1.5vw, 1.22rem);
+  color: var(--muted);
+  max-width: 58rem;
+}
+
+.hero-panel,
+.create-hero,
+.status-ribbon,
+.sidebar,
+.log-panel,
+.scenario-column,
+.save-column,
+.briefing-panel,
+.archetype-card,
+.narration-preview {
+  background: linear-gradient(180deg, color-mix(in oklab, var(--panel), transparent 8%), var(--panel-soft));
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+}
+
+.hero-panel,
+.create-hero {
+  padding: clamp(1.2rem, 3vw, 2.8rem);
+  border-radius: 1.8rem;
+  position: relative;
+  overflow: hidden;
+}
+
+.hero-panel::after,
+.create-hero::after,
+.status-ribbon::after {
+  content: '';
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: center;
+  margin-top: 1.6rem;
+}
+
+.hero-note,
+.scenario-strip {
+  padding: 0.9rem 1rem;
+  border-left: 3px solid var(--accent);
+  background: color-mix(in oklab, var(--panel-soft), transparent 26%);
+}
+
+.primary-button,
+.ghost-button,
+.inline-link,
+.suggestion-chip,
+.save-item,
+.archetype-card {
+  border: 1px solid transparent;
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.primary-button {
+  background: linear-gradient(135deg, oklch(0.84 0 0), oklch(0.68 0 0));
+  color: oklch(0.12 0 0);
+  padding: 0.95rem 1.4rem;
+  border-radius: 999px;
+  font-weight: 700;
+}
+
+.ghost-button,
+.inline-link {
+  background: transparent;
+  color: var(--text);
+  padding: 0.92rem 1.25rem;
+  border-radius: 999px;
+  border-color: var(--line);
+  text-decoration: none;
+}
+
+.primary-button:hover,
+.ghost-button:hover,
+.inline-link:hover,
+.suggestion-chip:hover,
+.save-item:hover,
+.archetype-card:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in oklab, white 40%, transparent 20%);
+}
+
+.start-grid,
+.create-layout,
+.game-grid {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.start-grid {
+  grid-template-columns: 1.2fr 0.8fr;
+  align-items: start;
+}
+
+.create-layout {
+  grid-template-columns: 1.2fr 0.8fr;
+  align-items: start;
+}
+
+.game-grid {
+  grid-template-columns: 280px minmax(0, 1fr) 320px;
+}
+
+.scenario-column,
+.save-column,
+.briefing-panel,
+.sidebar,
+.log-panel {
+  border-radius: 1.5rem;
+  padding: 1.1rem;
+}
+
+.save-list,
+.archetype-inline-list,
+.suggestion-list,
+.tag-list,
+.system-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.save-item {
+  width: 100%;
+  text-align: left;
+  padding: 1rem;
+  border-radius: 1.25rem;
+  background: color-mix(in oklab, var(--panel-soft), transparent 18%);
+  color: var(--text);
+}
+
+.save-item p,
+.archetype-chip span,
+.muted-copy,
+.sidebar p,
+.log-entry small,
+label span,
+.notes-block li {
+  color: var(--muted);
+}
+
+.save-item dl,
+.archetype-card dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin: 1rem 0 0;
+}
+
+.save-item dt,
+.archetype-card dt,
+.stat-stack span {
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+}
+
+.save-item dd,
+.archetype-card dd,
+.stat-stack strong {
+  margin: 0.2rem 0 0;
+  font-size: 1.2rem;
+}
+
+.empty-state {
+  padding: 1.3rem;
+  border-radius: 1.25rem;
+  background: color-mix(in oklab, var(--panel-soft), transparent 10%);
+}
+
+.archetype-inline-list {
+  margin-top: 1.25rem;
+}
+
+.archetype-chip {
+  padding: 0.9rem 1rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: color-mix(in oklab, var(--panel-soft), transparent 20%);
+}
+
+.archetype-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.writer-stage {
+  display: grid;
+  gap: 1rem;
+}
+
+.writer-prompt-panel,
+.role-card {
+  background: linear-gradient(180deg, color-mix(in oklab, var(--panel), transparent 8%), var(--panel-soft));
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  border-radius: 1.4rem;
+}
+
+.writer-prompt-panel {
+  padding: 1.1rem;
+}
+
+.role-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.role-card {
+  display: grid;
+  gap: 0.75rem;
+  text-align: left;
+  padding: 1.1rem;
+  color: var(--text);
+}
+
+.role-card.is-active {
+  border-color: color-mix(in oklab, white 38%, transparent 24%);
+  background: linear-gradient(180deg, color-mix(in oklab, white 8%, transparent 84%), var(--panel-soft));
+}
+
+.archetype-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.8rem;
+  padding: 1.1rem;
+  border-radius: 1.4rem;
+  color: var(--text);
+}
+
+.archetype-card.is-active {
+  border-color: color-mix(in oklab, white 38%, transparent 24%);
+  background: linear-gradient(180deg, color-mix(in oklab, white 8%, transparent 84%), var(--panel-soft));
+}
+
+.prompt-text {
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.briefing-panel {
+  position: sticky;
+  top: 1rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.compact-actions {
+  margin-top: 0;
+}
+
+.story-outline-card {
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem;
+  border-radius: 1.2rem;
+  border: 1px solid var(--line);
+  background: color-mix(in oklab, var(--panel-soft), transparent 14%);
+}
+
+.story-outline-card h3 {
+  margin: 0;
+  font-size: 1.15rem;
+  font-family: 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', serif;
+}
+
+.story-bible-card {
+  gap: 1rem;
+}
+
+.story-bible-card.is-empty {
+  min-height: 16rem;
+  align-content: center;
+}
+
+.story-list-block {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.story-list {
+  margin: 0;
+  padding-left: 1.25rem;
+  color: var(--muted);
+  display: grid;
+  gap: 0.55rem;
+}
+
+label {
+  display: grid;
+  gap: 0.5rem;
+}
+
+textarea,
+input {
+  width: 100%;
+  border-radius: 1rem;
+  border: 1px solid var(--line);
+  background: color-mix(in oklab, var(--panel), transparent 6%);
+  color: var(--text);
+  padding: 0.95rem 1rem;
+}
+
+.status-ribbon {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  border-radius: 1.6rem;
+  padding: 1.2rem 1.3rem;
+}
+
+.ribbon-stats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 0.7rem;
+}
+
+.ribbon-stats span,
+.location-pill,
+.phase-chip,
+.tag-list span,
+.system-tags span,
+.suggestion-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.5rem 0.8rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: color-mix(in oklab, var(--panel-soft), transparent 18%);
+}
+
+.phase-escaped {
+  color: var(--accent-strong);
+}
+
+.phase-failed {
+  color: var(--warning);
+}
+
+.sidebar {
+  display: grid;
+  gap: 1rem;
+}
+
+.sidebar-block {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.stat-stack {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.stat-stack div {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 0.7rem 0.85rem;
+  border-radius: 1rem;
+  background: color-mix(in oklab, var(--panel-soft), transparent 15%);
+}
+
+.item-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.item-list li {
+  padding: 0.75rem 0.9rem;
+  border-radius: 1rem;
+  background: color-mix(in oklab, var(--panel-soft), transparent 22%);
+}
+
+.log-panel {
+  display: grid;
+  gap: 1rem;
+  min-height: 70vh;
+}
+
+.log-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.narration-preview {
+  border-radius: 1.25rem;
+  padding: 1rem;
+}
+
+.resolution-banner {
+  margin-top: 1rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(260px, 0.7fr);
+  gap: 1rem;
+  padding: 1.25rem;
+  border-radius: 1.6rem;
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  position: relative;
+  overflow: hidden;
+}
+
+.resolution-banner::after {
+  content: '';
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, currentColor, transparent);
+  opacity: 0.4;
+}
+
+.resolution-escaped {
+  color: var(--text);
+  background:
+    radial-gradient(circle at top right, oklch(0.72 0 0 / 0.16), transparent 28%),
+    linear-gradient(135deg, color-mix(in oklab, white 10%, transparent 86%), color-mix(in oklab, var(--panel-soft), black 6%));
+}
+
+.resolution-failed {
+  color: var(--text);
+  background:
+    radial-gradient(circle at top right, oklch(0.62 0 0 / 0.16), transparent 28%),
+    linear-gradient(135deg, color-mix(in oklab, black 14%, transparent 88%), color-mix(in oklab, var(--panel-soft), black 8%));
+}
+
+.resolution-copy {
+  display: grid;
+  gap: 0.85rem;
+  align-content: start;
+}
+
+.resolution-stats {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.resolution-stats div {
+  padding: 0.95rem 1rem;
+  border-radius: 1rem;
+  border: 1px solid var(--line);
+  background: color-mix(in oklab, var(--panel-soft), transparent 15%);
+}
+
+.resolution-stats span {
+  display: block;
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--muted);
+}
+
+.resolution-stats strong {
+  display: block;
+  margin-top: 0.35rem;
+  font-size: clamp(1.4rem, 2vw, 2rem);
+}
+
+.log-stream {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.85rem;
+}
+
+.log-entry {
+  padding: 1rem;
+  border-radius: 1.15rem;
+  border: 1px solid var(--line);
+  background: color-mix(in oklab, var(--panel-soft), transparent 15%);
+}
+
+.log-entry.tier-success {
+  border-left: 4px solid var(--accent);
+}
+
+.log-entry.tier-cost {
+  border-left: 4px solid var(--warning);
+}
+
+.log-entry.tier-fail {
+  border-left: 4px solid color-mix(in oklab, var(--warning), black 45%);
+}
+
+.log-meta {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  margin-bottom: 0.4rem;
+  color: var(--muted);
+}
+
+.command-form {
+  display: grid;
+  gap: 0.9rem;
+  margin-top: auto;
+}
+
+.suggestion-list {
+  align-items: flex-start;
+}
+
+.suggestion-chip {
+  background: transparent;
+  color: var(--text);
+}
+
+.error-copy {
+  color: color-mix(in oklab, white 70%, black 30%);
+}
+
+.game-loading {
+  min-height: 60vh;
+  display: grid;
+  place-items: center;
+  font-size: 1.1rem;
+}
+
+@media (max-width: 1100px) {
+  .start-grid,
+  .create-layout,
+  .game-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .resolution-banner {
+    grid-template-columns: 1fr;
+  }
+
+  .briefing-panel {
+    position: static;
+  }
+
+  .status-ribbon,
+  .log-header {
+    flex-direction: column;
+  }
+
+  .ribbon-stats {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 720px) {
+  .shell {
+    width: min(100vw - 1rem, 100%);
+  }
+
+  .archetype-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .role-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .hero-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .primary-button,
+  .ghost-button,
+  .inline-link {
+    width: 100%;
+    justify-content: center;
+    text-align: center;
+  }
+}

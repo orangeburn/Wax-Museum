@@ -1,0 +1,16 @@
+{
+  "name": "@wax-museum/client",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -p tsconfig.json --noEmit && vite build",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@wax-museum/shared": "*",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-router-dom": "^7.4.0"
+  }
+}
