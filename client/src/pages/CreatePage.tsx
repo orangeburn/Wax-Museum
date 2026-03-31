@@ -1,7 +1,7 @@
 import { CUSTOM_TAG_WHITELIST, type WriterDraftResponse, type WriterRole } from '@wax-museum/shared';
 import { FormEvent, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { createSession, generateWriterDraft } from '../lib/api';
+import { ApiResponseError, createSession, generateWriterDraft } from '../lib/api';
 
 export function CreatePage() {
   const navigate = useNavigate();
@@ -33,7 +33,9 @@ export function CreatePage() {
       setCustomBackground(firstRole?.suggestedBackground ?? '');
       setCustomTag(firstRole?.suggestedTag ?? '');
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '生成剧本失败');
+      setDraft(null);
+      setSelectedRoleId(null);
+      setError(reason instanceof ApiResponseError ? reason.message : null);
     } finally {
       setGenerating(false);
     }
@@ -48,7 +50,6 @@ export function CreatePage() {
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!draft || !selectedRole) {
-      setError('请先生成剧本草案并选择角色。');
       return;
     }
 
@@ -61,19 +62,26 @@ export function CreatePage() {
         archetypeId: selectedRole.archetypeId,
         storyPrompt: backgroundPrompt,
         selectedRole: {
+          id: selectedRole.id,
+          archetypeId: selectedRole.archetypeId,
           label: selectedRole.label,
           publicIdentity: selectedRole.publicIdentity,
           hiddenDrive: selectedRole.hiddenDrive,
           relationshipHook: selectedRole.relationshipHook,
           specialty: selectedRole.specialty,
-          suggestedTag: selectedRole.suggestedTag
+          suggestedTag: selectedRole.suggestedTag,
+          suggestedBackground: selectedRole.suggestedBackground,
+          stats: selectedRole.stats,
+          startingItems: selectedRole.startingItems,
+          coreTag: selectedRole.coreTag,
+          secretAgenda: selectedRole.secretAgenda
         },
         customBackground,
         customTag
       });
       navigate(`/session/${snapshot.sessionId}`);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '创建失败');
+      setError(reason instanceof ApiResponseError ? reason.message : null);
     } finally {
       setLoading(false);
     }
@@ -105,6 +113,8 @@ export function CreatePage() {
                 {generating ? '编剧生成中…' : '生成剧本草案'}
               </button>
             </div>
+            {generating ? <p className="muted-copy">正在请求模型生成故事草案，这一步通常需要几秒钟。</p> : null}
+            {error ? <p className="error-copy inline-error">{error}</p> : null}
           </div>
 
           {draft ? (
@@ -119,16 +129,16 @@ export function CreatePage() {
                 <div className="story-list-block">
                   <strong>剧情大纲</strong>
                   <ol className="story-list">
-                    {draft.bible.outline.map((entry) => (
-                      <li key={entry}>{entry}</li>
+                    {draft.bible.outline.map((entry, index) => (
+                      <li key={`outline-${index}`}>{String(entry)}</li>
                     ))}
                   </ol>
                 </div>
                 <div className="story-list-block">
                   <strong>结局方向</strong>
                   <ul className="story-list">
-                    {draft.bible.endings.map((entry) => (
-                      <li key={entry}>{entry}</li>
+                    {draft.bible.endings.map((entry, index) => (
+                      <li key={`ending-${index}`}>{String(entry)}</li>
                     ))}
                   </ul>
                 </div>
@@ -184,6 +194,15 @@ export function CreatePage() {
               <p><strong>角色专长：</strong>{selectedRole.specialty}</p>
             </div>
           ) : null}
+          {selectedRole ? (
+            <div className="story-outline-card">
+              <p className="panel-kicker">秘密目标</p>
+              <h3>{selectedRole.secretAgenda.title}</h3>
+              <p>{selectedRole.secretAgenda.description}</p>
+              <p><strong>完成提示：</strong>{selectedRole.secretAgenda.successHint}</p>
+              <p className="muted-copy">预计需要推进 {selectedRole.secretAgenda.requiredProgress} 次相关行动。</p>
+            </div>
+          ) : null}
           <label>
             <span>角色背景</span>
             <textarea
@@ -204,7 +223,6 @@ export function CreatePage() {
           </label>
           {selectedRole ? <p className="muted-copy">编剧建议 Tag：{selectedRole.suggestedTag}</p> : null}
           <p className="muted-copy">规则白名单：{CUSTOM_TAG_WHITELIST.join('、')}</p>
-          {error ? <p className="error-copy">{error}</p> : null}
           <div className="hero-actions">
             <button type="button" className="ghost-button" onClick={() => navigate('/')}>
               返回起始页

@@ -69,18 +69,24 @@ describe('session API', () => {
 
   it('generates a structured story outline from a simple prompt', async () => {
     const { app } = createApp({ saveDir, randomSource: () => 0.99 });
+    const originalApiKey = process.env.LLM_API_KEY;
+    const originalModel = process.env.LLM_MODEL;
+    process.env.LLM_API_KEY = '';
+    process.env.LLM_MODEL = '';
 
-    const generated = await request(app).post('/api/story-outline').send({
-      templateId: 'submarine-escape',
-      archetypeId: 'engineer',
-      prompt: '我曾在一次深潜事故里失去同伴，这次想查清真相'
-    });
+    try {
+      const generated = await request(app).post('/api/story-outline').send({
+        templateId: 'submarine-escape',
+        archetypeId: 'engineer',
+        prompt: '我曾在一次深潜事故里失去同伴，这次想查清真相'
+      });
 
-    expect(generated.status).toBe(200);
-    expect(generated.body.title).toContain('工程师');
-    expect(generated.body.premise).toContain('深潜');
-    expect(generated.body.suggestedBackground).toContain('你曾');
-    expect(Array.isArray(generated.body.suggestedTags)).toBe(true);
+      expect(generated.status).toBe(400);
+      expect(generated.body.message).toContain('未配置自定义故事生成模型');
+    } finally {
+      process.env.LLM_API_KEY = originalApiKey;
+      process.env.LLM_MODEL = originalModel;
+    }
   });
 
   it('lets the medic resolve the survivor branch into a viable victory route', async () => {
@@ -278,7 +284,7 @@ describe('session API', () => {
     expect(snapshot.world.oxygen).toBe(0);
   });
 
-  it('rejects impossible actions while keeping the session usable', async () => {
+  it('story-filters impossible actions while keeping the session usable', async () => {
     const { app } = createApp({ saveDir, randomSource: () => 0.99 });
     const created = await request(app).post('/api/session').send({
       templateId: 'submarine-escape',
@@ -289,7 +295,9 @@ describe('session API', () => {
 
     const sessionId = created.body.sessionId as string;
     const invalid = await request(app).post(`/api/session/${sessionId}/action`).send({ intent: '我现在修理主继电器' });
-    expect(invalid.body.filteredAction.validity).toBe('rejected');
+    expect(invalid.body.filteredAction.validity).toBe('accepted');
+    expect(invalid.body.filteredAction.type).toBe('inspect');
+    expect(invalid.body.filteredAction.storyFilterNote).toContain('当前场景没有可直接修理的核心装置');
     expect(invalid.body.sessionSnapshot.world.oxygen).toBe(12);
 
     const valid = await request(app).post(`/api/session/${sessionId}/action`).send({ intent: '查看储物柜' });

@@ -11,6 +11,13 @@ import type {
 
 const DEV_API_FALLBACKS = ['http://127.0.0.1:8787', 'http://localhost:8787'];
 
+export class ApiResponseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ApiResponseError';
+  }
+}
+
 function buildRequestInit(init?: RequestInit): RequestInit {
   return {
     headers: {
@@ -26,6 +33,29 @@ function withBaseUrl(path: string, baseUrl: string) {
 
 async function fetchWithFallback(input: string, init?: RequestInit) {
   const requestInit = buildRequestInit(init);
+
+  if (import.meta.env.DEV && input.startsWith('/api')) {
+    let lastError: unknown;
+
+    for (const baseUrl of DEV_API_FALLBACKS) {
+      try {
+        const response = await fetch(withBaseUrl(input, baseUrl), requestInit);
+        if (response.ok) {
+          return response;
+        }
+
+        lastError = new Error(`DEV backend request failed with status ${response.status}`);
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    try {
+      return await fetch(input, requestInit);
+    } catch (error) {
+      throw lastError ?? error;
+    }
+  }
 
   try {
     return await fetch(input, requestInit);
@@ -51,7 +81,7 @@ async function readJson<T>(input: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const error = (await response.json().catch(() => ({ message: '请求失败' }))) as { message?: string };
-    throw new Error(error.message ?? '请求失败');
+    throw new ApiResponseError(error.message ?? '请求失败');
   }
 
   return response.json() as Promise<T>;

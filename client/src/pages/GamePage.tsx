@@ -3,6 +3,14 @@ import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { getSession, postAction } from '../lib/api';
 
+function getLocationLabel(snapshot: SessionSnapshot, locationId: string) {
+  return snapshot.world.locations[locationId]?.label ?? locationId;
+}
+
+function getLocationDescription(snapshot: SessionSnapshot, locationId: string) {
+  return snapshot.world.locations[locationId]?.description ?? '这个区域的信息暂时缺失。';
+}
+
 export function GamePage() {
   const { sessionId } = useParams<{ sessionId: string }>();
   const [session, setSession] = useState<SessionSnapshot | null>(null);
@@ -29,6 +37,7 @@ export function GamePage() {
 
   const latestEntry = useMemo(() => session?.logTail.at(-1) ?? null, [session]);
   const itemLabels: Partial<Record<ItemId, string>> = session?.scenario?.glossary?.itemLabels ?? {};
+  const secretAgenda = session?.player.secretAgenda ?? null;
   const isResolved = session?.phase === 'escaped' || session?.phase === 'failed';
   const resolutionTitle = session?.phase === 'escaped' ? `你活着离开了 ${session?.scenario.title ?? '现场'}。` : `${session?.scenario.title ?? '这个现场'} 吞掉了最后一口气。`;
   const resolutionSummary =
@@ -122,7 +131,7 @@ export function GamePage() {
           </div>
           <div className="resolution-stats" aria-label="结算摘要">
             <div>
-              <span>剩余氧气</span>
+              <span>{session.scenario.countdown.label}</span>
               <strong>{session.world.oxygen}</strong>
             </div>
             <div>
@@ -149,6 +158,15 @@ export function GamePage() {
             <h2>{session.player.archetypeLabel}</h2>
             <p>{session.player.customBackground || '没有额外背景备注。'}</p>
           </div>
+          {secretAgenda ? (
+            <div className="sidebar-block">
+              <p className="panel-kicker">秘密目标</p>
+              <h2>{secretAgenda.title}</h2>
+              <p>{secretAgenda.description}</p>
+              <p><strong>完成提示：</strong>{secretAgenda.successHint}</p>
+              <p className="muted-copy">{session.objectives.secretAgendaStatus ?? `秘密目标进行中 ${secretAgenda.progress}/${secretAgenda.requiredProgress}`}</p>
+            </div>
+          ) : null}
           <div className="stat-stack">
             <div>
               <span>体魄</span>
@@ -191,7 +209,7 @@ export function GamePage() {
               <p className="panel-kicker">动态目标</p>
               <h2>{session.objectives.dynamicGuide}</h2>
             </div>
-            <span className="location-pill">当前位置：{session.world.locations[session.player.locationId].label}</span>
+            <span className="location-pill">当前位置：{getLocationLabel(session, session.player.locationId)}</span>
           </div>
 
           <div className="narration-preview">
@@ -243,8 +261,8 @@ export function GamePage() {
         <aside className="sidebar route-rail">
           <div className="sidebar-block">
             <p className="panel-kicker">当前舱室</p>
-            <h2>{session.world.locations[session.player.locationId].label}</h2>
-            <p>{session.world.locations[session.player.locationId].description}</p>
+            <h2>{getLocationLabel(session, session.player.locationId)}</h2>
+            <p>{getLocationDescription(session, session.player.locationId)}</p>
           </div>
           <div className="sidebar-block">
             <p className="panel-kicker">推荐动作</p>
@@ -260,7 +278,7 @@ export function GamePage() {
             <p className="panel-kicker">已到过</p>
             <ul className="item-list">
               {session.world.visitedLocations.map((locationId) => (
-                <li key={locationId}>{session.world.locations[locationId].label}</li>
+                <li key={locationId}>{getLocationLabel(session, locationId)}</li>
               ))}
             </ul>
           </div>

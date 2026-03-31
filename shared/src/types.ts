@@ -1,11 +1,6 @@
 export type TemplateId = string;
-export type ArchetypeId = 'engineer' | 'medic' | 'security' | 'passenger';
-export type LocationId =
-  | 'crew-quarters'
-  | 'engine-room'
-  | 'med-bay'
-  | 'control-room'
-  | 'escape-bay';
+export type ArchetypeId = string;
+export type LocationId = string;
 export type ItemId =
   | 'insulated-wrench'
   | 'captain-keycard'
@@ -33,6 +28,7 @@ export type ObjectivePhase =
   | 'prepare-launch'
   | 'resolution';
 export type SkillKey = 'physique' | 'mind' | 'empathy';
+export type GameplayMode = 'template' | 'llm';
 export type TagId =
   | '机械直觉'
   | '战地急救'
@@ -95,7 +91,15 @@ export interface TemplateDefinition {
   initialDanger: number;
   initialHp: number;
   initialSan: number;
+  countdown: CountdownPresentation;
   locations: Record<LocationId, LocationDefinition>;
+}
+
+export interface CountdownPresentation {
+  label: string;
+  shortLabel: string;
+  max: number;
+  recoverLabel: string;
 }
 
 export interface ScenarioGlossary {
@@ -110,12 +114,42 @@ export interface ScenarioGlossary {
   itemLabels: Record<ItemId, string>;
 }
 
+export interface StoryBeat {
+  id: string;
+  title: string;
+  summary: string;
+  guidance: string;
+  locationId: LocationId;
+  actionType: ActionType;
+  targetLabel: string;
+  skill?: SkillKey;
+  requiredItemId?: ItemId | null;
+  rewardItemId?: ItemId | null;
+  countdownDelta?: number;
+  successText: string;
+  failText: string;
+  suggestions: string[];
+}
+
+export interface SecretAgenda {
+  title: string;
+  description: string;
+  successHint: string;
+  triggerKeywords: string[];
+  requiredProgress: number;
+  progress: number;
+  status: 'active' | 'completed' | 'failed';
+}
+
 export interface StoryScenario {
   id: string;
   title: string;
   premise: string;
   openingLine: string;
   macroObjective: string;
+  countdown: CountdownPresentation;
+  gameplayMode?: GameplayMode;
+  beats?: StoryBeat[];
   locations: Record<LocationId, LocationDefinition>;
   glossary: ScenarioGlossary;
 }
@@ -132,6 +166,7 @@ export interface PlayerCharacter {
   san: number;
   inventory: ItemId[];
   locationId: LocationId;
+  secretAgenda?: SecretAgenda | null;
 }
 
 export interface WorldFlags {
@@ -153,6 +188,7 @@ export interface WorldState {
   oxygen: number;
   danger: number;
   turn: number;
+  storyBeatIndex?: number;
   locations: Record<LocationId, LocationDefinition>;
   visitedLocations: LocationId[];
   flags: WorldFlags;
@@ -164,23 +200,27 @@ export interface ObjectiveState {
   phase: ObjectivePhase;
   countdownLabel: string;
   availableActionsHint: string[];
+  secretAgendaStatus?: string;
 }
 
 export interface ParsedAction {
   type: ActionType;
   rawIntent: string;
   normalizedIntent: string;
+  dynamicBeatId?: string;
   targetId?: string;
   targetLabel: string;
   locationId?: LocationId;
   toolId?: ItemId;
   consumesTurn: boolean;
+  storyFilterNote?: string;
 }
 
 export interface FilteredAction extends ParsedAction {
   validity: 'accepted' | 'redirected' | 'rejected';
   reason?: string;
   redirectedFrom?: ActionType;
+  storyFilterNote?: string;
 }
 
 export interface Resolution {
@@ -219,6 +259,7 @@ export interface SaveMeta {
   phase: SessionPhase;
   archetypeId: ArchetypeId;
   oxygen: number;
+  countdownName: string;
   danger: number;
   dynamicGuide: string;
 }
@@ -289,6 +330,10 @@ export interface WriterRole {
   specialty: string;
   suggestedTag: string;
   suggestedBackground: string;
+  stats: Stats;
+  startingItems: ItemId[];
+  coreTag: TagId;
+  secretAgenda: Omit<SecretAgenda, 'progress' | 'status'>;
 }
 
 export interface StoryBible {
@@ -310,12 +355,19 @@ export interface WriterDraftResponse {
 }
 
 export interface SelectedRoleProfile {
+  id: string;
+  archetypeId: ArchetypeId;
   label: string;
   publicIdentity: string;
   hiddenDrive: string;
   relationshipHook: string;
   specialty: string;
   suggestedTag: string;
+  suggestedBackground: string;
+  stats: Stats;
+  startingItems: ItemId[];
+  coreTag: TagId;
+  secretAgenda: Omit<SecretAgenda, 'progress' | 'status'>;
 }
 
 export interface ActionRequest {

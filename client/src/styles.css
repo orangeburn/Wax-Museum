@@ -633,6 +633,10 @@ input {
   color: color-mix(in oklab, white 70%, black 30%);
 }
 
+.inline-error {
+  margin-top: 0.75rem;
+}
+
 .game-loading {
   min-height: 60vh;
   display: grid;

@@ -11,6 +11,12 @@ export const SUBMARINE_TEMPLATE: TemplateDefinition = {
   initialDanger: 0,
   initialHp: 3,
   initialSan: 3,
+  countdown: {
+    label: '剩余氧气',
+    shortLabel: '氧气',
+    max: 12,
+    recoverLabel: '氧气'
+  },
   locations: {
     'crew-quarters': {
       id: 'crew-quarters',
