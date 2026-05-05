@@ -267,6 +267,37 @@ function buildNpcPoolFromRoles(
     });
 }
 
+function getSceneObject(session: Pick<GameSession, 'world'>, objectId: string) {
+  for (const location of Object.values(session.world.locations)) {
+    const sceneObject = (location.sceneObjects ?? []).find((entry) => entry.id === objectId);
+    if (sceneObject) {
+      return sceneObject;
+    }
+  }
+  return null;
+}
+
+function mapObjectIdToTargetId(objectId: string | undefined): TargetId | null {
+  switch (objectId) {
+    case 'crew-locker':
+      return 'locker';
+    case 'engine-relay':
+      return 'relay';
+    case 'control-console':
+      return 'console';
+    case 'med-cabinet':
+      return 'cabinet';
+    case 'med-survivor':
+      return 'survivor';
+    case 'control-bulkhead':
+      return 'bulkhead';
+    case 'escape-pod':
+      return 'escape-pod';
+    default:
+      return null;
+  }
+}
+
 function buildNpcPublicStatus(attitude: StoryNpc['attitude']) {
   if (attitude === 'friendly') {
     return '正在尝试建立合作。';
@@ -301,12 +332,7 @@ function getPrimarySkillForAction(actionType: ActionType): SkillKey {
 }
 
 function getPlayerActionPointCost(session: GameSession, actionType: ActionType) {
-  const base = ACTION_POINT_BASE_COST[actionType] ?? 1;
-  if (base <= 0) return 0;
-  const skill = getPrimarySkillForAction(actionType);
-  const stat = session.player.stats[skill] ?? 1;
-  const discount = stat >= 5 ? 2 : stat >= 4 ? 1 : 0;
-  return Math.max(1, base - discount);
+  return FREE_ACTIONS.has(actionType) ? 0 : 1;
 }
 
 function getPlayerRoundActionPoints(session: GameSession) {
@@ -329,13 +355,7 @@ function getNpcPseudoStats(npc: StoryNpc) {
 }
 
 function getNpcActionPointCost(npc: StoryNpc, actionType: ActionType) {
-  const base = ACTION_POINT_BASE_COST[actionType] ?? 1;
-  if (base <= 0) return 0;
-  const stats = getNpcPseudoStats(npc);
-  const skill = getPrimarySkillForAction(actionType);
-  const stat = stats[skill];
-  const discount = stat >= 5 ? 2 : stat >= 4 ? 1 : 0;
-  return Math.max(1, base - discount);
+  return FREE_ACTIONS.has(actionType) ? 0 : 1;
 }
 
 function getNpcRoundActionPoints(npc: StoryNpc) {
@@ -447,10 +467,12 @@ function advanceToNextActor(session: GameSession) {
   const currentId = session.world.activeActorId ?? order[0]?.actorId ?? PLAYER_ACTOR_ID;
   const currentIndex = order.findIndex((entry) => entry.actorId === currentId);
   const nextIndex = currentIndex + 1;
-  if (currentIndex === -1 || nextIndex >= order.length) {
+  if (currentIndex === -1) {
     return false;
   }
-
+  if (nextIndex >= order.length) {
+    return false;
+  }
   session.world.activeActorId = order[nextIndex]!.actorId;
   return true;
 }
@@ -493,9 +515,7 @@ function resolveNpcTurn(session: GameSession, npc: StoryNpc, randomSource: () =>
   }
   session.world.npcActionPoints = apPool;
 
-  let safety = 0;
-  while (safety < 32 && (apPool[npc.id] ?? 0) > 0) {
-    safety += 1;
+  if ((apPool[npc.id] ?? 0) > 0) {
     ensureNpcPrivateState(npc);
     const action = decideNpcAction(session, npc, publicWorld, randomSource);
     const actionType: ActionType =
@@ -508,47 +528,46 @@ function resolveNpcTurn(session: GameSession, npc: StoryNpc, randomSource: () =>
             : 'inspect';
     const actionCost = getNpcActionPointCost(npc, actionType);
 
-    if ((apPool[npc.id] ?? 0) < actionCost) {
+    if ((apPool[npc.id] ?? 0) >= actionCost) {
+      apPool[npc.id] = Math.max(0, (apPool[npc.id] ?? 0) - actionCost);
+      session.world.turn += 1;
+
+      if (action.type === 'share-clue') {
+        npc.status = '压低声音提供了关键信息。';
+        publicSnippets.push(`${npc.name}在${requireLocation(session, npc.locationId).label}提醒你：${npc.clue}`);
+        dangerDelta -= 1;
+        stateChanges.push(`NPC协助：${npc.name}降低了局势压力`);
+      } else if (action.type === 'pressure') {
+        npc.status = '通过言行持续施压。';
+        publicSnippets.push(`${npc.name}忽然逼近一步，明显在试探你的底线。`);
+        dangerDelta += 1;
+        stateChanges.push(`NPC施压：${npc.name}让局势更紧绷`);
+        if (randomSource() < 0.25) {
+          damage += 1;
+          stateChanges.push(`NPC冲突：${npc.name}造成了直接伤害`);
+        }
+      } else if (action.type === 'observe') {
+        npc.status = '保持观察，暂时不直接介入。';
+        if (randomSource() < 0.2) {
+          publicSnippets.push(`${npc.name}没有接话，只是记下了你刚才的动作。`);
+        }
+      } else if (action.type === 'reposition') {
+        const moveCandidates = getNpcMoveCandidates(session, npc.locationId);
+        const nextLocation = pickBestNpcMove(session, npc, moveCandidates, publicWorld, randomSource);
+        if (nextLocation && nextLocation !== npc.locationId) {
+          npc.locationId = nextLocation;
+          npc.status = `已转移到${requireLocation(session, nextLocation).label}附近活动。`;
+          publicSnippets.push(`${npc.name}转移到了${requireLocation(session, nextLocation).label}。`);
+        }
+      }
+
+      npc.privateState!.stress = clamp(npc.privateState!.stress + action.stressDelta, 0, 5);
+      npc.privateState!.lastAction = action.type;
+      npc.privateState!.memory = [action.memory, ...npc.privateState!.memory].slice(0, 6);
+      stateChanges.push(`${npc.name} 行动点 -${actionCost}`);
+    } else {
       apPool[npc.id] = 0;
-      break;
     }
-
-    apPool[npc.id] = Math.max(0, (apPool[npc.id] ?? 0) - actionCost);
-    session.world.turn += 1;
-
-    if (action.type === 'share-clue') {
-      npc.status = '压低声音提供了关键信息。';
-      publicSnippets.push(`${npc.name}在${requireLocation(session, npc.locationId).label}提醒你：${npc.clue}`);
-      dangerDelta -= 1;
-      stateChanges.push(`NPC协助：${npc.name}降低了局势压力`);
-    } else if (action.type === 'pressure') {
-      npc.status = '通过言行持续施压。';
-      publicSnippets.push(`${npc.name}忽然逼近一步，明显在试探你的底线。`);
-      dangerDelta += 1;
-      stateChanges.push(`NPC施压：${npc.name}让局势更紧绷`);
-      if (randomSource() < 0.25) {
-        damage += 1;
-        stateChanges.push(`NPC冲突：${npc.name}造成了直接伤害`);
-      }
-    } else if (action.type === 'observe') {
-      npc.status = '保持观察，暂时不直接介入。';
-      if (randomSource() < 0.2) {
-        publicSnippets.push(`${npc.name}没有接话，只是记下了你刚才的动作。`);
-      }
-    } else if (action.type === 'reposition') {
-      const moveCandidates = getNpcMoveCandidates(session, npc.locationId);
-      const nextLocation = pickBestNpcMove(session, npc, moveCandidates, publicWorld, randomSource);
-      if (nextLocation && nextLocation !== npc.locationId) {
-        npc.locationId = nextLocation;
-        npc.status = `已转移到${requireLocation(session, nextLocation).label}附近活动。`;
-        publicSnippets.push(`${npc.name}转移到了${requireLocation(session, nextLocation).label}。`);
-      }
-    }
-
-    npc.privateState!.stress = clamp(npc.privateState!.stress + action.stressDelta, 0, 5);
-    npc.privateState!.lastAction = action.type;
-    npc.privateState!.memory = [action.memory, ...npc.privateState!.memory].slice(0, 6);
-    stateChanges.push(`${npc.name} 行动点 -${actionCost}`);
   }
 
   return {
@@ -640,9 +659,7 @@ async function resolveNpcTurnWithDecider(
   }
   session.world.npcActionPoints = apPool;
 
-  let safety = 0;
-  while (safety < 32 && (apPool[npc.id] ?? 0) > 0) {
-    safety += 1;
+  if ((apPool[npc.id] ?? 0) > 0) {
     ensureNpcPrivateState(npc);
     const observation = buildActorObservation(session, npc.id);
     const llmDecision = npcIntentDecider
@@ -659,47 +676,46 @@ async function resolveNpcTurnWithDecider(
             : 'inspect';
     const actionCost = getNpcActionPointCost(npc, actionType);
 
-    if ((apPool[npc.id] ?? 0) < actionCost) {
+    if ((apPool[npc.id] ?? 0) >= actionCost) {
+      apPool[npc.id] = Math.max(0, (apPool[npc.id] ?? 0) - actionCost);
+      session.world.turn += 1;
+
+      if (action.type === 'share-clue') {
+        npc.status = '压低声音提供了关键信息。';
+        publicSnippets.push(`${npc.name}在${requireLocation(session, npc.locationId).label}提醒你：${npc.clue}`);
+        dangerDelta -= 1;
+        stateChanges.push(`NPC协助：${npc.name}降低了局势压力`);
+      } else if (action.type === 'pressure') {
+        npc.status = '通过言行持续施压。';
+        publicSnippets.push(`${npc.name}忽然逼近一步，明显在试探你的底线。`);
+        dangerDelta += 1;
+        stateChanges.push(`NPC施压：${npc.name}让局势更紧绷`);
+        if (randomSource() < 0.25) {
+          damage += 1;
+          stateChanges.push(`NPC冲突：${npc.name}造成了直接伤害`);
+        }
+      } else if (action.type === 'observe') {
+        npc.status = '保持观察，暂时不直接介入。';
+        if (randomSource() < 0.2) {
+          publicSnippets.push(`${npc.name}没有接话，只是记下了眼前局势。`);
+        }
+      } else if (action.type === 'reposition') {
+        const moveCandidates = getNpcMoveCandidates(session, npc.locationId);
+        const nextLocation = pickBestNpcMove(session, npc, moveCandidates, publicWorld, randomSource);
+        if (nextLocation && nextLocation !== npc.locationId) {
+          npc.locationId = nextLocation;
+          npc.status = `已转移到${requireLocation(session, nextLocation).label}附近活动。`;
+          publicSnippets.push(`${npc.name}转移到了${requireLocation(session, nextLocation).label}。`);
+        }
+      }
+
+      npc.privateState!.stress = clamp(npc.privateState!.stress + action.stressDelta, 0, 5);
+      npc.privateState!.lastAction = action.type;
+      npc.privateState!.memory = [action.memory, ...npc.privateState!.memory].slice(0, 6);
+      stateChanges.push(`${npc.name} 行动点 -${actionCost}`);
+    } else {
       apPool[npc.id] = 0;
-      break;
     }
-
-    apPool[npc.id] = Math.max(0, (apPool[npc.id] ?? 0) - actionCost);
-    session.world.turn += 1;
-
-    if (action.type === 'share-clue') {
-      npc.status = '压低声音提供了关键信息。';
-      publicSnippets.push(`${npc.name}在${requireLocation(session, npc.locationId).label}提醒你：${npc.clue}`);
-      dangerDelta -= 1;
-      stateChanges.push(`NPC协助：${npc.name}降低了局势压力`);
-    } else if (action.type === 'pressure') {
-      npc.status = '通过言行持续施压。';
-      publicSnippets.push(`${npc.name}忽然逼近一步，明显在试探你的底线。`);
-      dangerDelta += 1;
-      stateChanges.push(`NPC施压：${npc.name}让局势更紧绷`);
-      if (randomSource() < 0.25) {
-        damage += 1;
-        stateChanges.push(`NPC冲突：${npc.name}造成了直接伤害`);
-      }
-    } else if (action.type === 'observe') {
-      npc.status = '保持观察，暂时不直接介入。';
-      if (randomSource() < 0.2) {
-        publicSnippets.push(`${npc.name}没有接话，只是记下了眼前局势。`);
-      }
-    } else if (action.type === 'reposition') {
-      const moveCandidates = getNpcMoveCandidates(session, npc.locationId);
-      const nextLocation = pickBestNpcMove(session, npc, moveCandidates, publicWorld, randomSource);
-      if (nextLocation && nextLocation !== npc.locationId) {
-        npc.locationId = nextLocation;
-        npc.status = `已转移到${requireLocation(session, nextLocation).label}附近活动。`;
-        publicSnippets.push(`${npc.name}转移到了${requireLocation(session, nextLocation).label}。`);
-      }
-    }
-
-    npc.privateState!.stress = clamp(npc.privateState!.stress + action.stressDelta, 0, 5);
-    npc.privateState!.lastAction = action.type;
-    npc.privateState!.memory = [action.memory, ...npc.privateState!.memory].slice(0, 6);
-    stateChanges.push(`${npc.name} 行动点 -${actionCost}`);
   }
 
   return { publicText: publicSnippets.slice(0, 2).join(' '), systemText: systemSnippets.join(' / '), dangerDelta, damage, stateChanges };
@@ -795,6 +811,7 @@ export function buildActorObservation(session: GameSession, actorId: string): Ac
     actorLabel: isPlayer ? session.player.archetypeLabel : npc?.name ?? actorId,
     currentLocation,
     visibleLocations: Array.from(visibleLocationIds).map((locationId) => requireLocation(session, locationId)),
+    visibleSceneObjects: currentLocation.sceneObjects ?? [],
     visibleNpcs,
     publicWorld: {
       turn: session.world.turn,
@@ -832,7 +849,7 @@ export function filterAction(session: GameSession, parsed: ParsedAction): Filter
   }
 
   const currentLocation = requireLocation(session, session.player.locationId);
-  const targetId = (filteredParsed.targetId ?? 'location') as TargetId;
+  const targetId = ((mapObjectIdToTargetId(filteredParsed.objectId) ?? filteredParsed.targetId) ?? 'location') as TargetId;
 
   if (filteredParsed.type === 'inventory' || filteredParsed.type === 'help') {
     return { ...filteredParsed, validity: 'accepted' };
@@ -842,7 +859,9 @@ export function filterAction(session: GameSession, parsed: ParsedAction): Filter
     return {
       ...filteredParsed,
       targetId,
-      targetLabel: filteredParsed.targetLabel || currentLocation.label,
+      targetLabel: filteredParsed.objectId
+        ? (getSceneObject(session, filteredParsed.objectId)?.label ?? filteredParsed.targetLabel)
+        : (filteredParsed.targetLabel || currentLocation.label),
       validity: 'accepted'
     };
   }
@@ -1061,7 +1080,11 @@ export function applyParsedAction(
       resolution.stateChanges.unshift(`${working.scenario.countdown.shortLabel} -1`);
     }
 
-    if (filteredAction.consumesTurn && (working.world.playerActionPoints ?? 0) <= 0 && working.phase === 'active') {
+    const playerTurnEndsNow =
+      filteredAction.consumesTurn &&
+      (filteredAction.type === 'move' || (working.world.playerActionPoints ?? 0) <= 0);
+
+    if (playerTurnEndsNow && working.phase === 'active') {
       if (!advanceToNextActor(working)) {
         beginNextRound(working, randomSource, resolution.stateChanges);
       }
@@ -1243,7 +1266,11 @@ export async function applyParsedActionWithNpcAi(
         resolution.stateChanges.unshift(`${working.scenario.countdown.shortLabel} -1`);
       }
 
-      if (filteredAction.consumesTurn && (working.world.playerActionPoints ?? 0) <= 0 && working.phase === 'active') {
+      const playerTurnEndsNow =
+        filteredAction.consumesTurn &&
+        (filteredAction.type === 'move' || (working.world.playerActionPoints ?? 0) <= 0);
+
+      if (playerTurnEndsNow && working.phase === 'active') {
         if (!advanceToNextActor(working)) {
           beginNextRound(working, randomSource, resolution.stateChanges);
         }
@@ -1364,67 +1391,15 @@ export function listAvailableActions(session: GameSession): string[] {
   }
 
   const hints: string[] = [];
-  const location = session.player.locationId;
-  const currentLocation = requireLocation(session, location);
+  const currentLocation = requireLocation(session, session.player.locationId);
 
   hints.push(`查看${currentLocation.label}`);
-
-  if (location === 'crew-quarters') {
-    if (!session.world.flags.wrenchFound) {
-      hints.push(`查看${getTargetLabel(session, 'locker')}`);
-      hints.push(`强行撬开${getTargetLabel(session, 'locker')}`);
-    }
-    hints.push(`前往${requireLocation(session, 'engine-room').label}`);
-    hints.push(`前往${requireLocation(session, 'med-bay').label}`);
-  }
-
-  if (location === 'engine-room') {
-    if (!session.world.flags.powerRestored) {
-      hints.push(`修理${getTargetLabel(session, 'relay')}`);
-      hints.push(`查看${getTargetLabel(session, 'relay')}`);
-      if (hasItem(session, 'sealant-foam') && hasItem(session, 'insulated-wrench')) {
-        hints.push(`使用${getItemLabel(session, 'sealant-foam')}修复${getTargetLabel(session, 'relay')}`);
-      }
-    }
-    hints.push(`查看${requireLocation(session, 'engine-room').pointsOfInterest[1]}`);
-    hints.push(`前往${requireLocation(session, 'control-room').label}`);
-    hints.push(`前往${requireLocation(session, 'crew-quarters').label}`);
-  }
-
-  if (location === 'med-bay') {
-    hints.push(`查看${getTargetLabel(session, 'cabinet')}`);
-    if (session.world.flags.survivorPresent) {
-      hints.push(`查看${getTargetLabel(session, 'survivor')}`);
-    }
-    if (session.world.flags.survivorPresent && !session.world.flags.survivorHelped) {
-      hints.push(`说服${getTargetLabel(session, 'survivor')}`);
-      if (hasItem(session, 'medkit')) {
-        hints.push(`使用${getItemLabel(session, 'medkit')}救${getTargetLabel(session, 'survivor')}`);
-      }
-    }
-    hints.push(`前往${requireLocation(session, 'crew-quarters').label}`);
-  }
-
-  if (location === 'control-room') {
-    hints.push(`查看${getTargetLabel(session, 'console')}`);
-    hints.push(`查看${getTargetLabel(session, 'bulkhead')}`);
-    if (session.world.flags.keycardRecovered && !session.world.flags.escapeBayUnlocked) {
-      hints.push(`使用${getItemLabel(session, 'captain-keycard')}`);
-    }
-    if (!session.world.flags.escapeBayUnlocked) {
-      hints.push(`强行破开${getTargetLabel(session, 'bulkhead')}`);
-    }
-    hints.push(`前往${requireLocation(session, 'engine-room').label}`);
-  }
-
-  if (location === 'escape-bay') {
-    hints.push(`查看${getTargetLabel(session, 'escape-pod')}`);
-    if (session.world.flags.launchInspected && !session.world.flags.launchReady && hasItem(session, 'oxygen-canister')) {
-      hints.push(`使用${getItemLabel(session, 'oxygen-canister')}`);
-    }
-    hints.push(`启动${getTargetLabel(session, 'escape-pod')}`);
-    hints.push(`前往${requireLocation(session, 'control-room').label}`);
-  }
+  (currentLocation.sceneObjects ?? []).forEach((sceneObject) => {
+    sceneObject.interactionHints.forEach((hint) => hints.push(hint));
+  });
+  currentLocation.connected.forEach((locationId) => {
+    hints.push(`前往${requireLocation(session, locationId).label}`);
+  });
 
   getNpcsAtPlayerLocation(session).forEach((npc) => {
     hints.push(`说服${npc.name}`);
@@ -1437,10 +1412,6 @@ export function listAvailableActions(session: GameSession): string[] {
   if (hasItem(session, 'oxygen-canister')) {
     hints.push(`使用${getItemLabel(session, 'oxygen-canister')}`);
   }
-
-  listSandboxMoveTargets(session).forEach((entry) => {
-    hints.push(`前往${requireLocation(session, entry).label}`);
-  });
 
   hints.push('查看背包');
   hints.push('请求提示');
@@ -1664,8 +1635,8 @@ function moveAction(session: GameSession, action: FilteredAction) {
 
   return successResult(
     `你穿过吱嘎作响的通道进入${place.label}。${place.atmosphere}`,
-    `已抵达 ${place.label}。`,
-    []
+    `已抵达 ${place.label}，当前行动段结束。`,
+    ['切换场景，当前行动段结束']
   );
 }
 
@@ -2807,6 +2778,9 @@ function listActorActions(session: GameSession, actorId: string): string[] {
   const location = requireLocation(session, npc.locationId);
   const hints = new Set<string>();
   hints.add(`查看${location.label}`);
+  (location.sceneObjects ?? []).forEach((sceneObject) => {
+    sceneObject.interactionHints.slice(0, 2).forEach((hint) => hints.add(hint));
+  });
   location.connected.forEach((locationId) => hints.add(`前往${requireLocation(session, locationId).label}`));
 
   if (npc.locationId === session.player.locationId) {

@@ -1,6 +1,7 @@
 export type TemplateId = string;
 export type ArchetypeId = string;
 export type LocationId = string;
+export type SceneObjectId = string;
 export type ItemId =
   | 'insulated-wrench'
   | 'captain-keycard'
@@ -80,6 +81,27 @@ export interface LocationDefinition {
   atmosphere: string;
   connected: LocationId[];
   pointsOfInterest: string[];
+  sceneObjects: SceneObjectDefinition[];
+}
+
+export interface SceneObjectDefinition {
+  id: SceneObjectId;
+  label: string;
+  category: 'furniture' | 'container' | 'device' | 'character' | 'hazard' | 'exit' | 'clue';
+  description: string;
+  interactionHints: string[];
+  clueText?: string;
+  hiddenItemId?: ItemId | null;
+  requiredItemId?: ItemId | null;
+  skillProfile?: Partial<Record<ActionType, SkillKey>>;
+  difficultyProfile?: Partial<Record<ActionType, number>>;
+  state?: {
+    revealed?: boolean;
+    resolved?: boolean;
+    opened?: boolean;
+    moved?: boolean;
+    broken?: boolean;
+  };
 }
 
 export interface TemplateDefinition {
@@ -269,6 +291,7 @@ export interface ParsedAction {
   targetId?: string;
   targetLabel: string;
   locationId?: LocationId;
+  objectId?: SceneObjectId;
   toolId?: ItemId;
   consumesTurn: boolean;
   storyFilterNote?: string;
@@ -463,6 +486,7 @@ export interface ActorObservation {
   actorLabel: string;
   currentLocation: LocationDefinition;
   visibleLocations: LocationDefinition[];
+  visibleSceneObjects: SceneObjectDefinition[];
   visibleNpcs: Array<{
     id: string;
     name: string;
