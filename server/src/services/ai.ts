@@ -14,6 +14,7 @@ import {
   type ParsedAction,
   type Resolution,
   type RoleSettingPack,
+  type SceneObjectDefinition,
   type ScenarioGlossary,
   type SkillKey,
   type StoryBeat,
@@ -62,6 +63,7 @@ export class LocalAiService implements AiService {
     const normalizedIntent = normalizeIntent(intent);
     const type = inferActionType(normalizedIntent);
     const locationId = findLocation(normalizedIntent, session);
+    const objectId = findSceneObject(normalizedIntent, session, locationId);
     const toolId = findItem(normalizedIntent, session);
     const targetId = findTarget(normalizedIntent, session);
 
@@ -69,15 +71,18 @@ export class LocalAiService implements AiService {
       type,
       rawIntent: intent,
       normalizedIntent,
-      targetId,
+      targetId: objectId ?? targetId,
       targetLabel: locationId
         ? requireAiLocation(session, locationId).label
+        : objectId
+          ? getSceneObjectLabel(session, objectId)
         : toolId
           ? getItemLabel(session, toolId)
           : targetId
             ? getTargetLabel(session, targetId)
             : requireAiLocation(session, session.player.locationId).label,
       locationId,
+      objectId,
       toolId,
       consumesTurn: !FREE_ACTIONS.has(type)
     };
@@ -437,6 +442,24 @@ function findLocation(normalizedIntent: string, session: GameSession): LocationI
   return undefined;
 }
 
+function findSceneObject(normalizedIntent: string, session: GameSession, preferredLocationId?: LocationId) {
+  const locations = preferredLocationId
+    ? [preferredLocationId, session.player.locationId]
+    : [session.player.locationId, ...Object.keys(session.world.locations) as LocationId[]];
+
+  for (const locationId of locations) {
+    const location = session.world.locations[locationId];
+    if (!location) continue;
+    for (const sceneObject of location.sceneObjects ?? []) {
+      if (normalizedIntent.includes(sceneObject.label.toLowerCase())) {
+        return sceneObject.id;
+      }
+    }
+  }
+
+  return undefined;
+}
+
 function findItem(normalizedIntent: string, session: GameSession): ItemId | undefined {
   for (const [itemId, label] of Object.entries(session.scenario.glossary.itemLabels) as Array<[ItemId, string]>) {
     if (normalizedIntent.includes(label.toLowerCase())) {
@@ -485,6 +508,16 @@ function findTarget(normalizedIntent: string, session: GameSession): string | un
   }
 
   return session.world.locations[session.player.locationId]?.pointsOfInterest[0] ?? undefined;
+}
+
+function getSceneObjectLabel(session: GameSession, objectId: string) {
+  for (const location of Object.values(session.world.locations)) {
+    const sceneObject = (location.sceneObjects ?? []).find((entry) => entry.id === objectId);
+    if (sceneObject) {
+      return sceneObject.label;
+    }
+  }
+  return objectId;
 }
 
 function normalizeIntent(intent: string) {
@@ -1533,7 +1566,25 @@ function buildFallbackLocations(): Record<LocationId, LocationDefinition> {
       description: '所有动线都会经过这里，信息最杂也最危险。',
       atmosphere: '脚步声和低语交错，气氛紧绷。',
       connected: ['archive', 'control-room'],
-      pointsOfInterest: ['可疑血迹', '破损监控']
+      pointsOfInterest: ['可疑血迹', '破损监控'],
+      sceneObjects: [
+        {
+          id: 'hall-blood',
+          label: '可疑血迹',
+          category: 'clue',
+          description: '血迹被拖拽过，尾端在门口拐向另一侧。',
+          interactionHints: ['查看可疑血迹'],
+          clueText: '拖拽方向说明有人在第一时间移动过现场。'
+        },
+        {
+          id: 'hall-monitor',
+          label: '破损监控',
+          category: 'device',
+          description: '镜头碎了一半，但底座还亮着残余指示灯。',
+          interactionHints: ['查看破损监控'],
+          clueText: '监控在关键时间段被人为拍偏。'
+        }
+      ]
     },
     archive: {
       id: 'archive',
@@ -1541,7 +1592,25 @@ function buildFallbackLocations(): Record<LocationId, LocationDefinition> {
       description: '尘封记录堆满墙面，许多页被刻意抽走。',
       atmosphere: '纸张翻动声像在催促你快一点。',
       connected: ['hall', 'med-bay'],
-      pointsOfInterest: ['旧案记录', '被撬开的抽屉']
+      pointsOfInterest: ['旧案记录', '被撬开的抽屉'],
+      sceneObjects: [
+        {
+          id: 'archive-files',
+          label: '旧案记录',
+          category: 'clue',
+          description: '档案盒外侧有新近留下的灰指印。',
+          interactionHints: ['查看旧案记录'],
+          clueText: '有人在你之前专门翻过这一批记录。'
+        },
+        {
+          id: 'archive-drawer',
+          label: '被撬开的抽屉',
+          category: 'container',
+          description: '锁芯已经断裂，抽屉内衬被翻得一团糟。',
+          interactionHints: ['查看被撬开的抽屉', '强行撬开被撬开的抽屉'],
+          clueText: '里面曾经放过某种需要立即带走的小物件。'
+        }
+      ]
     },
     'control-room': {
       id: 'control-room',
@@ -1549,7 +1618,25 @@ function buildFallbackLocations(): Record<LocationId, LocationDefinition> {
       description: '这里掌握着大部分系统权限。',
       atmosphere: '告警灯忽明忽暗。',
       connected: ['hall', 'escape-bay'],
-      pointsOfInterest: ['主控终端', '封锁闸门']
+      pointsOfInterest: ['主控终端', '封锁闸门'],
+      sceneObjects: [
+        {
+          id: 'fallback-console',
+          label: '主控终端',
+          category: 'device',
+          description: '权限界面一闪一闪，像在等人补完最后一步。',
+          interactionHints: ['查看主控终端'],
+          clueText: '系统日志会告诉你谁改过权限。'
+        },
+        {
+          id: 'fallback-gate',
+          label: '封锁闸门',
+          category: 'exit',
+          description: '门锁结构完好，但授权信号被上层拦住了。',
+          interactionHints: ['查看封锁闸门', '强行破开封锁闸门'],
+          clueText: '门不是坏了，而是有人不想让你过去。'
+        }
+      ]
     },
     'med-bay': {
       id: 'med-bay',
@@ -1557,7 +1644,25 @@ function buildFallbackLocations(): Record<LocationId, LocationDefinition> {
       description: '治疗与审问都可能在这里发生。',
       atmosphere: '药水味混着消毒水味道。',
       connected: ['archive'],
-      pointsOfInterest: ['急救柜', '诊疗记录']
+      pointsOfInterest: ['急救柜', '诊疗记录'],
+      sceneObjects: [
+        {
+          id: 'fallback-cabinet',
+          label: '急救柜',
+          category: 'container',
+          description: '柜门外侧贴着新的封条，却没有医务签名。',
+          interactionHints: ['查看急救柜', '强行撬开急救柜'],
+          clueText: '有人借医务流程转运过别的东西。'
+        },
+        {
+          id: 'fallback-medlog',
+          label: '诊疗记录',
+          category: 'clue',
+          description: '几页记录被人匆忙折起又塞回去。',
+          interactionHints: ['查看诊疗记录'],
+          clueText: '伤情与时间线对不上。'
+        }
+      ]
     },
     'escape-bay': {
       id: 'escape-bay',
@@ -1565,7 +1670,25 @@ function buildFallbackLocations(): Record<LocationId, LocationDefinition> {
       description: '最终撤离手段就停在这里。',
       atmosphere: '金属震动声不断放大焦虑。',
       connected: ['control-room'],
-      pointsOfInterest: ['撤离载具', '发射面板']
+      pointsOfInterest: ['撤离载具', '发射面板'],
+      sceneObjects: [
+        {
+          id: 'fallback-vehicle',
+          label: '撤离载具',
+          category: 'exit',
+          description: '整套装置已经待机，但还差一项最终确认。',
+          interactionHints: ['查看撤离载具', '启动撤离载具'],
+          clueText: '真正卡住你的不是出口本身，而是启动前置条件。'
+        },
+        {
+          id: 'fallback-launch',
+          label: '发射面板',
+          category: 'device',
+          description: '面板上有一道旧划痕，像曾被人猛拍过。',
+          interactionHints: ['查看发射面板'],
+          clueText: '这里记录着最后一次被人尝试启动却失败的时间。'
+        }
+      ]
     }
   };
 }
@@ -1680,8 +1803,117 @@ function normalizeLocation(id: LocationId, input: Partial<LocationDefinition> | 
     description: input.description,
     atmosphere: input.atmosphere,
     connected: Array.isArray(input.connected) ? input.connected.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0) : [],
-    pointsOfInterest: input.pointsOfInterest
+    pointsOfInterest: input.pointsOfInterest,
+    sceneObjects: normalizeSceneObjects(id, input)
   };
+}
+
+function normalizeSceneObjects(locationId: LocationId, input: Partial<LocationDefinition>) {
+  const rawObjects = Array.isArray((input as { sceneObjects?: unknown[] }).sceneObjects)
+    ? ((input as { sceneObjects?: unknown[] }).sceneObjects ?? [])
+    : [];
+
+  const normalized = rawObjects
+    .map((entry, index) => normalizeSceneObject(locationId, entry, index))
+    .filter((entry): entry is SceneObjectDefinition => Boolean(entry));
+
+  if (normalized.length > 0) {
+    return normalized;
+  }
+
+  return (input.pointsOfInterest ?? []).map((label, index) => ({
+    id: `${locationId}-poi-${index + 1}`,
+    label,
+    category: inferSceneObjectCategory(label),
+    description: `${label}是这个区域最显眼的可交互物件之一。`,
+    interactionHints: [`查看${label}`],
+    clueText: `你感觉${label}背后藏着故事推进需要的细节。`
+  }));
+}
+
+function normalizeSceneObject(locationId: LocationId, input: unknown, index: number): SceneObjectDefinition | null {
+  if (!input || typeof input !== 'object') {
+    return null;
+  }
+  const raw = input as Record<string, unknown>;
+  const label = asString(raw.label);
+  const description = asString(raw.description);
+  if (!label || !description) {
+    return null;
+  }
+
+  const category = normalizeSceneObjectCategory(raw.category, label);
+  const interactionHints = Array.isArray(raw.interactionHints)
+    ? raw.interactionHints.map((entry) => asString(entry)).filter(Boolean).slice(0, 5)
+    : [`查看${label}`];
+
+  return {
+    id: asString(raw.id) || `${locationId}-object-${index + 1}`,
+    label,
+    category,
+    description,
+    interactionHints,
+    clueText: asString(raw.clueText) || undefined,
+    hiddenItemId: normalizeBeatItem(raw.hiddenItemId),
+    requiredItemId: normalizeBeatItem(raw.requiredItemId),
+    skillProfile: normalizeObjectSkillProfile(raw.skillProfile),
+    difficultyProfile: normalizeObjectDifficultyProfile(raw.difficultyProfile),
+    state: {
+      revealed: false,
+      resolved: false,
+      opened: false,
+      moved: false,
+      broken: false
+    }
+  };
+}
+
+function normalizeSceneObjectCategory(value: unknown, label: string): SceneObjectDefinition['category'] {
+  const normalized = asString(value);
+  if (['furniture', 'container', 'device', 'character', 'hazard', 'exit', 'clue'].includes(normalized)) {
+    return normalized as SceneObjectDefinition['category'];
+  }
+  return inferSceneObjectCategory(label);
+}
+
+function inferSceneObjectCategory(label: string): SceneObjectDefinition['category'] {
+  if (/(柜|箱|抽屉|桌|台)/.test(label)) return 'container';
+  if (/(终端|面板|继电器|装置|接口)/.test(label)) return 'device';
+  if (/(幸存者|证人|目击者|人|林沅)/.test(label)) return 'character';
+  if (/(门|闸门|通道|逃生艇|撤离)/.test(label)) return 'exit';
+  if (/(泄漏|火花|缆索|碎片|血迹)/.test(label)) return 'hazard';
+  if (/(线索|记录|日志|清单)/.test(label)) return 'clue';
+  return 'furniture';
+}
+
+function normalizeObjectSkillProfile(input: unknown) {
+  if (!input || typeof input !== 'object') {
+    return undefined;
+  }
+  const raw = input as Record<string, unknown>;
+  const result: Partial<Record<ActionType, SkillKey>> = {};
+  (['inspect', 'move', 'repair', 'force', 'use_item', 'persuade'] as ActionType[]).forEach((actionType) => {
+    const value = raw[actionType];
+    if (value === 'physique' || value === 'mind' || value === 'empathy') {
+      result[actionType] = value;
+    }
+  });
+  return Object.keys(result).length ? result : undefined;
+}
+
+function normalizeObjectDifficultyProfile(input: unknown) {
+  if (!input || typeof input !== 'object') {
+    return undefined;
+  }
+  const raw = input as Record<string, unknown>;
+  const result: Partial<Record<ActionType, number>> = {};
+  (['inspect', 'move', 'repair', 'force', 'use_item', 'persuade'] as ActionType[]).forEach((actionType) => {
+    const value = raw[actionType];
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      result[actionType] = clampNumber(value, 40, 120);
+    }
+  });
+  return Object.keys(result).length ? result : undefined;
 }
 
 function normalizeLocations(input: unknown): {
