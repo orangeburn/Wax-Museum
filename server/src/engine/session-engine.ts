@@ -5,21 +5,26 @@ import {
   SUBMARINE_TEMPLATE,
   TAG_RULES,
   type ActionType,
+  type ActorObservation,
   type CreateSessionRequest,
   type EventLogEntry,
   type FilteredAction,
   type GameSession,
   type ItemId,
   type LocationId,
+  type NpcIntentDecision,
   type ObjectiveState,
   type ParsedAction,
   type Resolution,
   type SaveMeta,
+  type SelectedRoleProfile,
   type SessionSnapshot,
   type SkillKey,
   type StoryBeat,
+  type StoryNpc,
   type StoryScenario,
-  type TagId
+  type TagId,
+  type TurnOrderEntry
 } from '@wax-museum/shared';
 import { randomUUID } from 'node:crypto';
 import { getItemLabel, getTargetLabel } from '../services/ai.js';
@@ -31,6 +36,21 @@ const INITIAL_SAN = 3;
 const INITIAL_OXYGEN = 12;
 const INITIAL_DANGER = 0;
 const MAX_HP = INITIAL_HP;
+const DEFAULT_MAX_ROUNDS = 20;
+const MIN_ROUNDS = 4;
+const MAX_ROUNDS = 20;
+const PLAYER_ACTOR_ID = 'player';
+
+const ACTION_POINT_BASE_COST: Record<ActionType, number> = {
+  inspect: 1,
+  inventory: 0,
+  help: 0,
+  move: 2,
+  repair: 3,
+  force: 3,
+  use_item: 2,
+  persuade: 2
+};
 
 type TargetId =
   | 'location'
@@ -55,6 +75,28 @@ export interface EngineResult {
   presentation: EnginePresentation;
 }
 
+interface NpcTurnOutcome {
+  publicText: string;
+  systemText: string;
+  dangerDelta: number;
+  damage: number;
+  stateChanges: string[];
+}
+
+interface TurnAdvanceOutcome {
+  publicText: string;
+  systemText: string;
+  stateChanges: string[];
+  dangerDelta: number;
+  damage: number;
+}
+
+export type NpcIntentDecider = (input: {
+  session: GameSession;
+  npc: StoryNpc;
+  observation: ActorObservation;
+}) => Promise<NpcIntentDecision | null>;
+
 function requireLocation(session: Pick<GameSession, 'world'>, locationId: LocationId) {
   const location = session.world.locations[locationId];
   if (!location) {
@@ -65,6 +107,14 @@ function requireLocation(session: Pick<GameSession, 'world'>, locationId: Locati
 
 export function createNewSession(request: CreateSessionRequest, scenario?: StoryScenario): GameSession {
   const activeScenario = scenario ?? createScenarioFromTemplate();
+  const generatedNpcPool = buildNpcPoolFromRoles(
+    request.generatedRoles ?? [],
+    request.selectedRole?.id ?? null,
+    activeScenario
+  );
+  if (generatedNpcPool.length > 0) {
+    activeScenario.npcs = generatedNpcPool;
+  }
   const startLocationId = getStartLocationId(activeScenario);
   const selectedRole = request.selectedRole;
   const archetype = selectedRole ? null : ARCHETYPES.find((entry) => entry.id === request.archetypeId);
@@ -73,6 +123,7 @@ export function createNewSession(request: CreateSessionRequest, scenario?: Story
   }
 
   const customTag = request.customTag.trim();
+  const maxRounds = activeScenario.storyGameMode === 'versus' ? undefined : normalizeRoundCount(request.roundCount);
   const normalizedCustomTag = CUSTOM_TAG_WHITELIST.includes(customTag as TagId)
     ? (customTag as TagId)
     : null;
@@ -117,13 +168,20 @@ export function createNewSession(request: CreateSessionRequest, scenario?: Story
             progress: 0,
             status: 'active'
           }
-        : null
+        : null,
+      settingPack: selectedRole?.settingPack ?? null
     },
     world: {
       templateId: activeScenario.id,
       oxygen: activeScenario.countdown.max,
       danger: INITIAL_DANGER,
       turn: 0,
+      maxRounds,
+      currentRound: 1,
+      playerActionPoints: 0,
+      npcActionPoints: {},
+      turnOrder: [],
+      activeActorId: PLAYER_ACTOR_ID,
       storyBeatIndex: activeScenario.gameplayMode === 'llm' ? 0 : undefined,
       locations: structuredClone(activeScenario.locations),
       visitedLocations: [startLocationId],
@@ -146,6 +204,7 @@ export function createNewSession(request: CreateSessionRequest, scenario?: Story
     saveMeta: createEmptySaveMeta()
   };
 
+  startRound(session, Math.random);
   refreshDerivedState(session);
 
   session.eventLog.push({
@@ -161,8 +220,188 @@ export function createNewSession(request: CreateSessionRequest, scenario?: Story
   return refreshDerivedState(session);
 }
 
+function buildNpcPoolFromRoles(
+  roles: SelectedRoleProfile[],
+  selectedRoleId: string | null,
+  scenario: StoryScenario
+): StoryNpc[] {
+  if (!Array.isArray(roles) || roles.length === 0) {
+    return [];
+  }
+
+  const locationIds = Object.keys(scenario.locations) as LocationId[];
+  if (locationIds.length === 0) {
+    return [];
+  }
+
+  return roles
+    .filter((role) => role.id !== selectedRoleId)
+    .slice(0, 6)
+    .map((role, index) => {
+      const locationId = locationIds[index % locationIds.length] ?? locationIds[0]!;
+      const attitude = inferNpcAttitude(role.coreTag, index);
+      return {
+        id: role.id,
+        name: role.label,
+        publicIdentity: role.publicIdentity,
+        hiddenDrive: role.hiddenDrive,
+        attitude,
+        locationId,
+        clue: role.relationshipHook,
+        status: buildNpcPublicStatus(attitude),
+        motiveAnchor: role.settingPack?.immediateNeed ?? role.hiddenDrive,
+        interactionTips: [
+          role.settingPack?.interactionGuide.trustGain ?? '先给对方可验证的小信息。',
+          role.settingPack?.interactionGuide.bargainingChip ?? role.specialty,
+          ...(role.settingPack?.interactionGuide.tabooTopics?.slice(0, 1).map((entry) => `避免触碰：${entry}`) ?? [])
+        ],
+        privateState: {
+          coreGoal: role.hiddenDrive,
+          shortTermGoal: role.settingPack?.immediateNeed ?? '先确保自己在当前回合不吃亏。',
+          strategy: role.settingPack?.actionTendencies?.[0] ?? role.specialty,
+          stress: 0,
+          memory: [],
+          lastAction: 'observe'
+        }
+      };
+    });
+}
+
+function buildNpcPublicStatus(attitude: StoryNpc['attitude']) {
+  if (attitude === 'friendly') {
+    return '正在尝试建立合作。';
+  }
+  if (attitude === 'hostile') {
+    return '态度强硬，持续施压。';
+  }
+  return '保持观望，暂不表态。';
+}
+
+function inferNpcAttitude(tag: TagId, index: number): StoryNpc['attitude'] {
+  if (tag === '说客' || tag === '战地急救') {
+    return 'friendly';
+  }
+  if (tag === '钢铁意志' || tag === '危机嗅觉') {
+    return 'hostile';
+  }
+  return index % 2 === 0 ? 'neutral' : 'friendly';
+}
+
+function normalizeRoundCount(input: number | undefined) {
+  if (typeof input !== 'number' || !Number.isFinite(input)) {
+    return DEFAULT_MAX_ROUNDS;
+  }
+  return Math.max(MIN_ROUNDS, Math.min(MAX_ROUNDS, Math.round(input)));
+}
+
+function getPrimarySkillForAction(actionType: ActionType): SkillKey {
+  if (actionType === 'persuade') return 'empathy';
+  if (actionType === 'repair' || actionType === 'inspect' || actionType === 'use_item') return 'mind';
+  return 'physique';
+}
+
+function getPlayerActionPointCost(session: GameSession, actionType: ActionType) {
+  const base = ACTION_POINT_BASE_COST[actionType] ?? 1;
+  if (base <= 0) return 0;
+  const skill = getPrimarySkillForAction(actionType);
+  const stat = session.player.stats[skill] ?? 1;
+  const discount = stat >= 5 ? 2 : stat >= 4 ? 1 : 0;
+  return Math.max(1, base - discount);
+}
+
+function getPlayerRoundActionPoints(session: GameSession) {
+  const average = (session.player.stats.physique + session.player.stats.mind + session.player.stats.empathy) / 3;
+  let ap = average >= 4 ? 4 : average <= 2 ? 2 : 3;
+  if (session.player.hp <= 1) ap -= 1;
+  if (session.player.san <= 1) ap -= 1;
+  if (session.world.danger >= 6) ap -= 1;
+  return clamp(ap, 2, 4);
+}
+
+function getNpcPseudoStats(npc: StoryNpc) {
+  if (npc.attitude === 'hostile') {
+    return { physique: 4, mind: 2, empathy: 1 } as const;
+  }
+  if (npc.attitude === 'friendly') {
+    return { physique: 2, mind: 3, empathy: 4 } as const;
+  }
+  return { physique: 3, mind: 3, empathy: 2 } as const;
+}
+
+function getNpcActionPointCost(npc: StoryNpc, actionType: ActionType) {
+  const base = ACTION_POINT_BASE_COST[actionType] ?? 1;
+  if (base <= 0) return 0;
+  const stats = getNpcPseudoStats(npc);
+  const skill = getPrimarySkillForAction(actionType);
+  const stat = stats[skill];
+  const discount = stat >= 5 ? 2 : stat >= 4 ? 1 : 0;
+  return Math.max(1, base - discount);
+}
+
+function getNpcRoundActionPoints(npc: StoryNpc) {
+  const stats = getNpcPseudoStats(npc);
+  const average = (stats.physique + stats.mind + stats.empathy) / 3;
+  let ap = average >= 3.3 ? 4 : average <= 2.3 ? 2 : 3;
+  const stress = npc.privateState?.stress ?? 0;
+  if (stress >= 4) ap -= 1;
+  return clamp(ap, 2, 4);
+}
+
+function refreshRoundActionPoints(session: GameSession) {
+  session.world.playerActionPoints = getPlayerRoundActionPoints(session);
+  const npcs = session.scenario.npcs ?? [];
+  const npcActionPoints: Record<string, number> = {};
+  npcs.forEach((npc) => {
+    npcActionPoints[npc.id] = getNpcRoundActionPoints(npc);
+  });
+  session.world.npcActionPoints = npcActionPoints;
+}
+
+function rollTwoDice(randomSource: () => number) {
+  const dieA = Math.floor(randomSource() * 6) + 1;
+  const dieB = Math.floor(randomSource() * 6) + 1;
+  return dieA + dieB;
+}
+
+function buildTurnOrder(session: GameSession, randomSource: () => number): TurnOrderEntry[] {
+  const entries: TurnOrderEntry[] = [
+    {
+      actorId: PLAYER_ACTOR_ID,
+      actorLabel: session.player.archetypeLabel,
+      actorType: 'player',
+      initiative: rollTwoDice(randomSource)
+    },
+    ...((session.scenario.npcs ?? []).map((npc) => ({
+      actorId: npc.id,
+      actorLabel: npc.name,
+      actorType: 'npc' as const,
+      initiative: rollTwoDice(randomSource)
+    })))
+  ];
+
+  return entries.sort((left, right) => {
+    if (right.initiative !== left.initiative) {
+      return right.initiative - left.initiative;
+    }
+    if (left.actorType !== right.actorType) {
+      return left.actorType === 'player' ? -1 : 1;
+    }
+    return left.actorLabel.localeCompare(right.actorLabel, 'zh-Hans-CN');
+  });
+}
+
+function startRound(session: GameSession, randomSource: () => number) {
+  refreshRoundActionPoints(session);
+  session.world.turnOrder = buildTurnOrder(session, randomSource);
+  session.world.activeActorId = session.world.turnOrder[0]?.actorId ?? PLAYER_ACTOR_ID;
+}
+
 function getMaxCountdown(session: GameSession) {
   return session.scenario.countdown.max + 2;
+}
+
+function getRoundCapLabel(session: GameSession) {
+  return session.world.maxRounds ? String(session.world.maxRounds) : '无限';
 }
 
 function getStartLocationId(scenario: StoryScenario): LocationId {
@@ -172,15 +411,417 @@ function getStartLocationId(scenario: StoryScenario): LocationId {
   return 'crew-quarters';
 }
 
+function getCurrentActor(session: GameSession) {
+  const activeActorId = session.world.activeActorId ?? PLAYER_ACTOR_ID;
+  if (activeActorId === PLAYER_ACTOR_ID) {
+    return {
+      actorId: PLAYER_ACTOR_ID,
+      actorLabel: session.player.archetypeLabel,
+      actorType: 'player' as const
+    };
+  }
+
+  const npc = (session.scenario.npcs ?? []).find((entry) => entry.id === activeActorId);
+  if (!npc) {
+    return {
+      actorId: PLAYER_ACTOR_ID,
+      actorLabel: session.player.archetypeLabel,
+      actorType: 'player' as const
+    };
+  }
+
+  return {
+    actorId: npc.id,
+    actorLabel: npc.name,
+    actorType: 'npc' as const
+  };
+}
+
+function advanceToNextActor(session: GameSession) {
+  const order = session.world.turnOrder ?? [];
+  if (!order.length) {
+    session.world.activeActorId = PLAYER_ACTOR_ID;
+    return false;
+  }
+
+  const currentId = session.world.activeActorId ?? order[0]?.actorId ?? PLAYER_ACTOR_ID;
+  const currentIndex = order.findIndex((entry) => entry.actorId === currentId);
+  const nextIndex = currentIndex + 1;
+  if (currentIndex === -1 || nextIndex >= order.length) {
+    return false;
+  }
+
+  session.world.activeActorId = order[nextIndex]!.actorId;
+  return true;
+}
+
+function beginNextRound(session: GameSession, randomSource: () => number, stateChanges: string[]) {
+  session.world.currentRound = (session.world.currentRound ?? 1) + 1;
+  if (session.world.maxRounds !== undefined && (session.world.currentRound ?? 1) > session.world.maxRounds) {
+    session.phase = 'failed';
+    stateChanges.push('已达到最大回合数');
+    return;
+  }
+
+  startRound(session, randomSource);
+  const orderLabel = (session.world.turnOrder ?? [])
+    .map((entry) => `${entry.actorLabel}(${entry.initiative})`)
+    .join(' > ');
+  stateChanges.push(`进入第 ${session.world.currentRound} 回合`);
+  if (orderLabel) {
+    stateChanges.push(`先攻顺序：${orderLabel}`);
+  }
+}
+
+function resolveNpcTurn(session: GameSession, npc: StoryNpc, randomSource: () => number): NpcTurnOutcome {
+  const publicSnippets: string[] = [];
+  const systemSnippets: string[] = [];
+  const stateChanges: string[] = [];
+  let dangerDelta = 0;
+  let damage = 0;
+  const publicWorld = {
+    turn: session.world.turn,
+    oxygen: session.world.oxygen,
+    danger: session.world.danger,
+    playerLocationId: session.player.locationId,
+    playerHp: session.player.hp
+  };
+
+  const apPool = session.world.npcActionPoints ?? {};
+  if (typeof apPool[npc.id] !== 'number') {
+    apPool[npc.id] = getNpcRoundActionPoints(npc);
+  }
+  session.world.npcActionPoints = apPool;
+
+  let safety = 0;
+  while (safety < 32 && (apPool[npc.id] ?? 0) > 0) {
+    safety += 1;
+    ensureNpcPrivateState(npc);
+    const action = decideNpcAction(session, npc, publicWorld, randomSource);
+    const actionType: ActionType =
+      action.type === 'share-clue'
+        ? 'persuade'
+        : action.type === 'pressure'
+          ? 'force'
+          : action.type === 'reposition'
+            ? 'move'
+            : 'inspect';
+    const actionCost = getNpcActionPointCost(npc, actionType);
+
+    if ((apPool[npc.id] ?? 0) < actionCost) {
+      apPool[npc.id] = 0;
+      break;
+    }
+
+    apPool[npc.id] = Math.max(0, (apPool[npc.id] ?? 0) - actionCost);
+    session.world.turn += 1;
+
+    if (action.type === 'share-clue') {
+      npc.status = '压低声音提供了关键信息。';
+      publicSnippets.push(`${npc.name}在${requireLocation(session, npc.locationId).label}提醒你：${npc.clue}`);
+      dangerDelta -= 1;
+      stateChanges.push(`NPC协助：${npc.name}降低了局势压力`);
+    } else if (action.type === 'pressure') {
+      npc.status = '通过言行持续施压。';
+      publicSnippets.push(`${npc.name}忽然逼近一步，明显在试探你的底线。`);
+      dangerDelta += 1;
+      stateChanges.push(`NPC施压：${npc.name}让局势更紧绷`);
+      if (randomSource() < 0.25) {
+        damage += 1;
+        stateChanges.push(`NPC冲突：${npc.name}造成了直接伤害`);
+      }
+    } else if (action.type === 'observe') {
+      npc.status = '保持观察，暂时不直接介入。';
+      if (randomSource() < 0.2) {
+        publicSnippets.push(`${npc.name}没有接话，只是记下了你刚才的动作。`);
+      }
+    } else if (action.type === 'reposition') {
+      const moveCandidates = getNpcMoveCandidates(session, npc.locationId);
+      const nextLocation = pickBestNpcMove(session, npc, moveCandidates, publicWorld, randomSource);
+      if (nextLocation && nextLocation !== npc.locationId) {
+        npc.locationId = nextLocation;
+        npc.status = `已转移到${requireLocation(session, nextLocation).label}附近活动。`;
+        publicSnippets.push(`${npc.name}转移到了${requireLocation(session, nextLocation).label}。`);
+      }
+    }
+
+    npc.privateState!.stress = clamp(npc.privateState!.stress + action.stressDelta, 0, 5);
+    npc.privateState!.lastAction = action.type;
+    npc.privateState!.memory = [action.memory, ...npc.privateState!.memory].slice(0, 6);
+    stateChanges.push(`${npc.name} 行动点 -${actionCost}`);
+  }
+
+  return {
+    publicText: publicSnippets.slice(0, 2).join(' '),
+    systemText: systemSnippets.join(' / '),
+    dangerDelta,
+    damage,
+    stateChanges
+  };
+}
+
+function resolveTurnQueueUntilPlayer(session: GameSession, randomSource: () => number): TurnAdvanceOutcome {
+  const publicSnippets: string[] = [];
+  const systemSnippets: string[] = [];
+  const stateChanges: string[] = [];
+  let dangerDelta = 0;
+  let damage = 0;
+  let safety = 0;
+
+  while (session.phase === 'active' && safety < 64) {
+    safety += 1;
+    const currentActor = getCurrentActor(session);
+    if (currentActor.actorType === 'player') {
+      break;
+    }
+
+    const npc = (session.scenario.npcs ?? []).find((entry) => entry.id === currentActor.actorId);
+    if (!npc) {
+      if (!advanceToNextActor(session)) {
+        beginNextRound(session, randomSource, stateChanges);
+      }
+      continue;
+    }
+
+    const npcOutcome = resolveNpcTurn(session, npc, randomSource);
+    if (npcOutcome.publicText) {
+      publicSnippets.push(npcOutcome.publicText);
+    }
+    if (npcOutcome.systemText) {
+      systemSnippets.push(npcOutcome.systemText);
+    }
+    stateChanges.push(...npcOutcome.stateChanges);
+    dangerDelta += npcOutcome.dangerDelta;
+    damage += npcOutcome.damage;
+
+    const pairOutcome = resolveNpcPairInteractions(session, randomSource);
+    publicSnippets.push(...pairOutcome.publicSnippets);
+    systemSnippets.push(...pairOutcome.systemSnippets);
+    stateChanges.push(...pairOutcome.stateChanges);
+    dangerDelta += pairOutcome.dangerDelta;
+    damage += pairOutcome.damage;
+
+    if (!advanceToNextActor(session)) {
+      beginNextRound(session, randomSource, stateChanges);
+    }
+  }
+
+  return {
+    publicText: publicSnippets.filter(Boolean).slice(0, 3).join(' '),
+    systemText: systemSnippets.filter(Boolean).join(' / '),
+    stateChanges,
+    dangerDelta,
+    damage
+  };
+}
+
+async function resolveNpcTurnWithDecider(
+  session: GameSession,
+  npc: StoryNpc,
+  randomSource: () => number,
+  npcIntentDecider?: NpcIntentDecider
+): Promise<NpcTurnOutcome> {
+  const publicSnippets: string[] = [];
+  const systemSnippets: string[] = [];
+  const stateChanges: string[] = [];
+  let dangerDelta = 0;
+  let damage = 0;
+  const publicWorld = {
+    turn: session.world.turn,
+    oxygen: session.world.oxygen,
+    danger: session.world.danger,
+    playerLocationId: session.player.locationId,
+    playerHp: session.player.hp
+  };
+
+  const apPool = session.world.npcActionPoints ?? {};
+  if (typeof apPool[npc.id] !== 'number') {
+    apPool[npc.id] = getNpcRoundActionPoints(npc);
+  }
+  session.world.npcActionPoints = apPool;
+
+  let safety = 0;
+  while (safety < 32 && (apPool[npc.id] ?? 0) > 0) {
+    safety += 1;
+    ensureNpcPrivateState(npc);
+    const observation = buildActorObservation(session, npc.id);
+    const llmDecision = npcIntentDecider
+      ? await npcIntentDecider({ session, npc, observation }).catch(() => null)
+      : null;
+    const action = coerceNpcDecision(session, npc, publicWorld, llmDecision, randomSource);
+    const actionType: ActionType =
+      action.type === 'share-clue'
+        ? 'persuade'
+        : action.type === 'pressure'
+          ? 'force'
+          : action.type === 'reposition'
+            ? 'move'
+            : 'inspect';
+    const actionCost = getNpcActionPointCost(npc, actionType);
+
+    if ((apPool[npc.id] ?? 0) < actionCost) {
+      apPool[npc.id] = 0;
+      break;
+    }
+
+    apPool[npc.id] = Math.max(0, (apPool[npc.id] ?? 0) - actionCost);
+    session.world.turn += 1;
+
+    if (action.type === 'share-clue') {
+      npc.status = '压低声音提供了关键信息。';
+      publicSnippets.push(`${npc.name}在${requireLocation(session, npc.locationId).label}提醒你：${npc.clue}`);
+      dangerDelta -= 1;
+      stateChanges.push(`NPC协助：${npc.name}降低了局势压力`);
+    } else if (action.type === 'pressure') {
+      npc.status = '通过言行持续施压。';
+      publicSnippets.push(`${npc.name}忽然逼近一步，明显在试探你的底线。`);
+      dangerDelta += 1;
+      stateChanges.push(`NPC施压：${npc.name}让局势更紧绷`);
+      if (randomSource() < 0.25) {
+        damage += 1;
+        stateChanges.push(`NPC冲突：${npc.name}造成了直接伤害`);
+      }
+    } else if (action.type === 'observe') {
+      npc.status = '保持观察，暂时不直接介入。';
+      if (randomSource() < 0.2) {
+        publicSnippets.push(`${npc.name}没有接话，只是记下了眼前局势。`);
+      }
+    } else if (action.type === 'reposition') {
+      const moveCandidates = getNpcMoveCandidates(session, npc.locationId);
+      const nextLocation = pickBestNpcMove(session, npc, moveCandidates, publicWorld, randomSource);
+      if (nextLocation && nextLocation !== npc.locationId) {
+        npc.locationId = nextLocation;
+        npc.status = `已转移到${requireLocation(session, nextLocation).label}附近活动。`;
+        publicSnippets.push(`${npc.name}转移到了${requireLocation(session, nextLocation).label}。`);
+      }
+    }
+
+    npc.privateState!.stress = clamp(npc.privateState!.stress + action.stressDelta, 0, 5);
+    npc.privateState!.lastAction = action.type;
+    npc.privateState!.memory = [action.memory, ...npc.privateState!.memory].slice(0, 6);
+    stateChanges.push(`${npc.name} 行动点 -${actionCost}`);
+  }
+
+  return { publicText: publicSnippets.slice(0, 2).join(' '), systemText: systemSnippets.join(' / '), dangerDelta, damage, stateChanges };
+}
+
+async function resolveTurnQueueUntilPlayerWithDecider(
+  session: GameSession,
+  randomSource: () => number,
+  npcIntentDecider?: NpcIntentDecider
+): Promise<TurnAdvanceOutcome> {
+  const publicSnippets: string[] = [];
+  const systemSnippets: string[] = [];
+  const stateChanges: string[] = [];
+  let dangerDelta = 0;
+  let damage = 0;
+  let safety = 0;
+
+  while (session.phase === 'active' && safety < 64) {
+    safety += 1;
+    const currentActor = getCurrentActor(session);
+    if (currentActor.actorType === 'player') break;
+
+    const npc = (session.scenario.npcs ?? []).find((entry) => entry.id === currentActor.actorId);
+    if (!npc) {
+      if (!advanceToNextActor(session)) beginNextRound(session, randomSource, stateChanges);
+      continue;
+    }
+
+    const npcOutcome = await resolveNpcTurnWithDecider(session, npc, randomSource, npcIntentDecider);
+    if (npcOutcome.publicText) publicSnippets.push(npcOutcome.publicText);
+    if (npcOutcome.systemText) systemSnippets.push(npcOutcome.systemText);
+    stateChanges.push(...npcOutcome.stateChanges);
+    dangerDelta += npcOutcome.dangerDelta;
+    damage += npcOutcome.damage;
+
+    const pairOutcome = resolveNpcPairInteractions(session, randomSource);
+    publicSnippets.push(...pairOutcome.publicSnippets);
+    systemSnippets.push(...pairOutcome.systemSnippets);
+    stateChanges.push(...pairOutcome.stateChanges);
+    dangerDelta += pairOutcome.dangerDelta;
+    damage += pairOutcome.damage;
+
+    if (!advanceToNextActor(session)) beginNextRound(session, randomSource, stateChanges);
+  }
+
+  return { publicText: publicSnippets.filter(Boolean).slice(0, 3).join(' '), systemText: systemSnippets.filter(Boolean).join(' / '), stateChanges, dangerDelta, damage };
+}
+
 export function buildSnapshot(session: GameSession): SessionSnapshot {
+  const scenario = structuredClone(session.scenario);
+  if (scenario.npcs?.length) {
+    scenario.npcs = scenario.npcs.map((npc) => ({
+      ...npc,
+      hiddenDrive: '未知',
+      motiveAnchor: undefined,
+      interactionTips: undefined,
+      privateState: undefined
+    }));
+  }
+
   return {
     sessionId: session.sessionId,
     phase: session.phase,
-    scenario: structuredClone(session.scenario),
+    scenario,
     player: structuredClone(session.player),
     world: structuredClone(session.world),
     objectives: structuredClone(session.objectives),
     logTail: session.eventLog.slice(-LOG_TAIL_SIZE)
+  };
+}
+
+export function buildActorObservation(session: GameSession, actorId: string): ActorObservation {
+  const isPlayer = actorId === PLAYER_ACTOR_ID;
+  const npc = isPlayer ? null : (session.scenario.npcs ?? []).find((entry) => entry.id === actorId) ?? null;
+  const actorLocationId = isPlayer ? session.player.locationId : npc?.locationId ?? session.player.locationId;
+  const currentLocation = requireLocation(session, actorLocationId);
+  const visibleLocationIds = new Set<LocationId>([actorLocationId, ...currentLocation.connected]);
+  const visibleNpcs = (session.scenario.npcs ?? [])
+    .filter((entry) => visibleLocationIds.has(entry.locationId))
+    .map((entry) => ({
+      id: entry.id,
+      name: entry.name,
+      publicIdentity: entry.publicIdentity,
+      attitude: entry.attitude,
+      locationId: entry.locationId,
+      status: entry.status,
+      clue: entry.locationId === actorLocationId ? entry.clue : undefined
+    }));
+
+  return {
+    actorId,
+    actorType: isPlayer ? 'player' : 'npc',
+    actorLabel: isPlayer ? session.player.archetypeLabel : npc?.name ?? actorId,
+    currentLocation,
+    visibleLocations: Array.from(visibleLocationIds).map((locationId) => requireLocation(session, locationId)),
+    visibleNpcs,
+    publicWorld: {
+      turn: session.world.turn,
+      currentRound: session.world.currentRound,
+      maxRounds: session.world.maxRounds,
+      countdownLabel: session.scenario.countdown.shortLabel,
+      countdownValue: session.world.oxygen,
+      danger: session.world.danger,
+      activeActorId: session.world.activeActorId
+    },
+    playerPublic: {
+      locationId: session.player.locationId,
+      hp: session.player.hp,
+      san: session.player.san
+    },
+    inventory: isPlayer ? [...session.player.inventory] : [],
+    availableActionsHint: listActorActions(session, actorId),
+    recentPublicEvents: session.eventLog.slice(-LOG_TAIL_SIZE).map((entry) => entry.publicText),
+    privateBrief: npc?.privateState
+      ? {
+          coreGoal: npc.privateState.coreGoal,
+          shortTermGoal: npc.privateState.shortTermGoal,
+          strategy: npc.privateState.strategy,
+          stress: npc.privateState.stress,
+          memory: [...npc.privateState.memory]
+        }
+      : undefined
   };
 }
 
@@ -211,6 +852,10 @@ export function filterAction(session: GameSession, parsed: ParsedAction): Filter
       return rejectAction(filteredParsed, '移动目标不明确。');
     }
 
+    if (!session.world.locations[filteredParsed.locationId]) {
+      return rejectAction(filteredParsed, '这个地点不存在于当前地图。');
+    }
+
     if (filteredParsed.locationId === session.player.locationId) {
       return {
         ...filteredParsed,
@@ -222,23 +867,6 @@ export function filterAction(session: GameSession, parsed: ParsedAction): Filter
         targetLabel: currentLocation.label,
         reason: '你已经在这里了，先观察周围更有帮助。'
       };
-    }
-
-    if (filteredParsed.locationId === 'escape-bay' && !session.world.flags.escapeBayUnlocked) {
-      return {
-        ...filteredParsed,
-        type: 'inspect',
-        consumesTurn: false,
-        validity: 'redirected',
-        redirectedFrom: 'move',
-        targetId: 'bulkhead',
-        targetLabel: getTargetLabel(session, 'bulkhead'),
-        reason: `${requireLocation(session, 'escape-bay').label} 还被${getTargetLabel(session, 'bulkhead')}锁住。`
-      };
-    }
-
-    if (!currentLocation.connected.includes(filteredParsed.locationId)) {
-      return rejectAction(filteredParsed, '当前舱室无法直达那个位置。');
     }
 
     return { ...filteredParsed, validity: 'accepted' };
@@ -276,8 +904,19 @@ export function filterAction(session: GameSession, parsed: ParsedAction): Filter
   }
 
   if (filteredParsed.type === 'persuade') {
+    const roomNpcs = getNpcsAtPlayerLocation(session);
+    if (roomNpcs.length > 0) {
+      const targetNpc = pickNpcPersuasionTarget(roomNpcs, filteredParsed.targetLabel);
+      return {
+        ...filteredParsed,
+        targetId: `npc:${targetNpc.id}`,
+        targetLabel: targetNpc.name,
+        validity: 'accepted'
+      };
+    }
+
     if (session.player.locationId !== 'med-bay' || !session.world.flags.survivorPresent) {
-      return rejectAction(filteredParsed, '这里没人能被你说服。');
+      return rejectAction(filteredParsed, '这里没人能与你互动。');
     }
 
     return {
@@ -302,7 +941,7 @@ export function filterAction(session: GameSession, parsed: ParsedAction): Filter
       return rejectAction(parsed, `只有在${requireLocation(session, 'control-room').label}的${getTargetLabel(session, 'bulkhead')}前才能使用${getItemLabel(session, 'captain-keycard')}。`);
     }
 
-    if (inferred.targetId === 'escape-pod' && (session.player.locationId !== 'escape-bay' || !session.world.flags.escapeBayUnlocked)) {
+    if (inferred.targetId === 'escape-pod' && session.player.locationId !== 'escape-bay') {
       return rejectAction(parsed, `${getTargetLabel(session, 'escape-pod')}还没有准备好。`);
     }
 
@@ -322,36 +961,120 @@ export function applyParsedAction(
   randomSource: () => number = Math.random
 ): EngineResult {
   const working = structuredClone(session) as GameSession;
+  const queueOutcome = resolveTurnQueueUntilPlayer(working, randomSource);
   const filteredAction = filterAction(working, parsed);
   const presentation: EnginePresentation = {
-    publicText: '',
-    systemText: ''
+    publicText: queueOutcome.publicText,
+    systemText: queueOutcome.systemText
   };
 
   let resolution: Resolution;
+  let skippedTurn = false;
+
+  if (queueOutcome.dangerDelta !== 0) {
+    working.world.danger = clamp(working.world.danger + queueOutcome.dangerDelta, 0, 9);
+  }
+  if (queueOutcome.damage > 0) {
+    working.player.hp = clamp(working.player.hp - queueOutcome.damage, 0, MAX_HP);
+  }
+
+  if (working.phase !== 'active') {
+    resolution = {
+      tier: 'fail',
+      summary: '本局已结束。',
+      stateChanges: queueOutcome.stateChanges,
+      oxygenCost: 0,
+      dangerDelta: queueOutcome.dangerDelta,
+      damage: queueOutcome.damage
+    };
+    presentation.publicText = `${presentation.publicText} 局势已经无法继续推进。`.trim();
+    presentation.systemText = `${presentation.systemText} / 本局已结束。`.trim();
+  } else if (getCurrentActor(working).actorType !== 'player') {
+    resolution = {
+      tier: 'fail',
+      summary: '当前还没轮到你行动。',
+      stateChanges: queueOutcome.stateChanges,
+      oxygenCost: 0,
+      dangerDelta: queueOutcome.dangerDelta,
+      damage: queueOutcome.damage
+    };
+    presentation.publicText = `${presentation.publicText} 其他角色还在行动，你暂时插不上手。`.trim();
+    presentation.systemText = `${presentation.systemText} / 等待轮到你。`.trim();
+  } else if (/(结束回合|跳过|skip)/i.test(parsed.rawIntent)) {
+    const remainingAp = working.world.playerActionPoints ?? 0;
+    working.world.playerActionPoints = 0;
+    skippedTurn = true;
+    resolution = {
+      tier: 'cost',
+      summary: '你提前结束了自己的回合。',
+      stateChanges: [...queueOutcome.stateChanges, `放弃剩余行动点 ${remainingAp}`],
+      oxygenCost: 0,
+      dangerDelta: queueOutcome.dangerDelta,
+      damage: queueOutcome.damage
+    };
+    presentation.publicText = `${presentation.publicText} 你压下继续行动的冲动，把剩余空档让给了其他人。`.trim();
+    presentation.systemText = `${presentation.systemText} / 你的回合提前结束。`.trim();
+  } else {
 
   if (filteredAction.validity === 'rejected') {
     resolution = {
       tier: 'fail',
       summary: filteredAction.reason ?? '行动被现实滤镜拒绝。',
-      stateChanges: [],
+      stateChanges: queueOutcome.stateChanges,
       oxygenCost: 0,
-      dangerDelta: 0,
-      damage: 0
+      dangerDelta: queueOutcome.dangerDelta,
+      damage: queueOutcome.damage
     };
-    presentation.publicText = filteredAction.reason ?? '你的意图没有通过现实滤镜。';
-    presentation.systemText = '状态未变化。';
+    presentation.publicText = `${presentation.publicText} ${filteredAction.reason ?? '你的意图没有通过现实滤镜。'}`.trim();
+    presentation.systemText = `${presentation.systemText} / 状态未变化。`.trim();
   } else {
+    const actionPointCost = filteredAction.consumesTurn ? getPlayerActionPointCost(working, filteredAction.type) : 0;
+    if (filteredAction.consumesTurn && (working.world.playerActionPoints ?? 0) < actionPointCost) {
+      resolution = {
+        tier: 'fail',
+        summary: '本回合行动点不足。',
+        stateChanges: queueOutcome.stateChanges,
+        oxygenCost: 0,
+        dangerDelta: queueOutcome.dangerDelta,
+        damage: queueOutcome.damage
+      };
+      presentation.publicText = `${presentation.publicText} 你想执行这个动作，但本回合行动点不足（需要 ${actionPointCost}，剩余 ${working.world.playerActionPoints ?? 0}）。`.trim();
+      presentation.systemText = `${presentation.systemText} / 请先使用低消耗动作，或结束回合。`.trim();
+    } else {
     const outcome = executeAcceptedAction(working, filteredAction, randomSource);
     resolution = outcome.resolution;
-    presentation.publicText = outcome.publicText;
-    presentation.systemText = outcome.systemText;
+    resolution.stateChanges.unshift(...queueOutcome.stateChanges);
+    resolution.dangerDelta += queueOutcome.dangerDelta;
+    resolution.damage += queueOutcome.damage;
+    presentation.publicText = `${presentation.publicText} ${outcome.publicText}`.trim();
+    presentation.systemText = `${presentation.systemText} / ${outcome.systemText}`.trim();
 
     if (filteredAction.consumesTurn) {
       working.world.turn += 1;
+      working.world.playerActionPoints = Math.max(0, (working.world.playerActionPoints ?? 0) - actionPointCost);
+      resolution.stateChanges.unshift(`行动点 -${actionPointCost}`);
+    }
+
+    if (filteredAction.type === 'move' && filteredAction.consumesTurn) {
       working.world.oxygen = clamp(working.world.oxygen - 1, 0, getMaxCountdown(working));
       resolution.oxygenCost = 1;
       resolution.stateChanges.unshift(`${working.scenario.countdown.shortLabel} -1`);
+    }
+
+    if (filteredAction.consumesTurn && (working.world.playerActionPoints ?? 0) <= 0 && working.phase === 'active') {
+      if (!advanceToNextActor(working)) {
+        beginNextRound(working, randomSource, resolution.stateChanges);
+      }
+      const nextQueue = resolveTurnQueueUntilPlayer(working, randomSource);
+      if (nextQueue.publicText) {
+        presentation.publicText = `${presentation.publicText} ${nextQueue.publicText}`.trim();
+      }
+      if (nextQueue.systemText) {
+        presentation.systemText = `${presentation.systemText} / ${nextQueue.systemText}`.trim();
+      }
+      resolution.dangerDelta += nextQueue.dangerDelta;
+      resolution.damage += nextQueue.damage;
+      resolution.stateChanges.push(...nextQueue.stateChanges);
     }
 
     if (resolution.dangerDelta !== 0) {
@@ -376,6 +1099,30 @@ export function applyParsedAction(
     if (working.world.flags.escapeLaunched) {
       working.phase = 'escaped';
     }
+    }
+  }
+  }
+
+  if (skippedTurn && working.phase === 'active') {
+    if (!advanceToNextActor(working)) {
+      beginNextRound(working, randomSource, resolution.stateChanges);
+    }
+    const nextQueue = resolveTurnQueueUntilPlayer(working, randomSource);
+    if (nextQueue.publicText) {
+      presentation.publicText = `${presentation.publicText} ${nextQueue.publicText}`.trim();
+    }
+    if (nextQueue.systemText) {
+      presentation.systemText = `${presentation.systemText} / ${nextQueue.systemText}`.trim();
+    }
+    resolution.dangerDelta += nextQueue.dangerDelta;
+    resolution.damage += nextQueue.damage;
+    resolution.stateChanges.push(...nextQueue.stateChanges);
+    if (resolution.dangerDelta !== 0) {
+      working.world.danger = clamp(working.world.danger + nextQueue.dangerDelta, 0, 9);
+    }
+    if (resolution.damage > 0) {
+      working.player.hp = clamp(working.player.hp - nextQueue.damage, 0, MAX_HP);
+    }
   }
 
   refreshDerivedState(working);
@@ -391,10 +1138,174 @@ export function applyParsedAction(
   };
 }
 
+export async function applyParsedActionWithNpcAi(
+  session: GameSession,
+  parsed: ParsedAction,
+  randomSource: () => number = Math.random,
+  npcIntentDecider?: NpcIntentDecider
+): Promise<EngineResult> {
+  const working = structuredClone(session) as GameSession;
+  const queueOutcome = await resolveTurnQueueUntilPlayerWithDecider(working, randomSource, npcIntentDecider);
+  const filteredAction = filterAction(working, parsed);
+  const presentation: EnginePresentation = {
+    publicText: queueOutcome.publicText,
+    systemText: queueOutcome.systemText
+  };
+
+  let resolution: Resolution;
+  let skippedTurn = false;
+
+  if (queueOutcome.dangerDelta !== 0) {
+    working.world.danger = clamp(working.world.danger + queueOutcome.dangerDelta, 0, 9);
+  }
+  if (queueOutcome.damage > 0) {
+    working.player.hp = clamp(working.player.hp - queueOutcome.damage, 0, MAX_HP);
+  }
+
+  if (working.phase !== 'active') {
+    resolution = {
+      tier: 'fail',
+      summary: '本局已结束。',
+      stateChanges: queueOutcome.stateChanges,
+      oxygenCost: 0,
+      dangerDelta: queueOutcome.dangerDelta,
+      damage: queueOutcome.damage
+    };
+    presentation.publicText = `${presentation.publicText} 局势已经无法继续推进。`.trim();
+    presentation.systemText = `${presentation.systemText} / 本局已结束。`.trim();
+  } else if (getCurrentActor(working).actorType !== 'player') {
+    resolution = {
+      tier: 'fail',
+      summary: '当前还没轮到你行动。',
+      stateChanges: queueOutcome.stateChanges,
+      oxygenCost: 0,
+      dangerDelta: queueOutcome.dangerDelta,
+      damage: queueOutcome.damage
+    };
+    presentation.publicText = `${presentation.publicText} 其他角色还在行动，你暂时插不上手。`.trim();
+    presentation.systemText = `${presentation.systemText} / 等待轮到你。`.trim();
+  } else if (/(结束回合|跳过|skip)/i.test(parsed.rawIntent)) {
+    const remainingAp = working.world.playerActionPoints ?? 0;
+    working.world.playerActionPoints = 0;
+    skippedTurn = true;
+    resolution = {
+      tier: 'cost',
+      summary: '你提前结束了自己的回合。',
+      stateChanges: [...queueOutcome.stateChanges, `放弃剩余行动点 ${remainingAp}`],
+      oxygenCost: 0,
+      dangerDelta: queueOutcome.dangerDelta,
+      damage: queueOutcome.damage
+    };
+    presentation.publicText = `${presentation.publicText} 你压下继续行动的冲动，把剩余空档让给了其他人。`.trim();
+    presentation.systemText = `${presentation.systemText} / 你的回合提前结束。`.trim();
+  } else if (filteredAction.validity === 'rejected') {
+    resolution = {
+      tier: 'fail',
+      summary: filteredAction.reason ?? '行动被现实滤镜拒绝。',
+      stateChanges: queueOutcome.stateChanges,
+      oxygenCost: 0,
+      dangerDelta: queueOutcome.dangerDelta,
+      damage: queueOutcome.damage
+    };
+    presentation.publicText = `${presentation.publicText} ${filteredAction.reason ?? '你的意图没有通过现实滤镜。'}`.trim();
+    presentation.systemText = `${presentation.systemText} / 状态未变化。`.trim();
+  } else {
+    const actionPointCost = filteredAction.consumesTurn ? getPlayerActionPointCost(working, filteredAction.type) : 0;
+    if (filteredAction.consumesTurn && (working.world.playerActionPoints ?? 0) < actionPointCost) {
+      resolution = {
+        tier: 'fail',
+        summary: '本回合行动点不足。',
+        stateChanges: queueOutcome.stateChanges,
+        oxygenCost: 0,
+        dangerDelta: queueOutcome.dangerDelta,
+        damage: queueOutcome.damage
+      };
+      presentation.publicText = `${presentation.publicText} 你想执行这个动作，但本回合行动点不足（需要 ${actionPointCost}，剩余 ${working.world.playerActionPoints ?? 0}）。`.trim();
+      presentation.systemText = `${presentation.systemText} / 请先使用低消耗动作，或结束回合。`.trim();
+    } else {
+      const outcome = executeAcceptedAction(working, filteredAction, randomSource);
+      resolution = outcome.resolution;
+      resolution.stateChanges.unshift(...queueOutcome.stateChanges);
+      resolution.dangerDelta += queueOutcome.dangerDelta;
+      resolution.damage += queueOutcome.damage;
+      presentation.publicText = `${presentation.publicText} ${outcome.publicText}`.trim();
+      presentation.systemText = `${presentation.systemText} / ${outcome.systemText}`.trim();
+
+      if (filteredAction.consumesTurn) {
+        working.world.turn += 1;
+        working.world.playerActionPoints = Math.max(0, (working.world.playerActionPoints ?? 0) - actionPointCost);
+        resolution.stateChanges.unshift(`行动点 -${actionPointCost}`);
+      }
+
+      if (filteredAction.type === 'move' && filteredAction.consumesTurn) {
+        working.world.oxygen = clamp(working.world.oxygen - 1, 0, getMaxCountdown(working));
+        resolution.oxygenCost = 1;
+        resolution.stateChanges.unshift(`${working.scenario.countdown.shortLabel} -1`);
+      }
+
+      if (filteredAction.consumesTurn && (working.world.playerActionPoints ?? 0) <= 0 && working.phase === 'active') {
+        if (!advanceToNextActor(working)) {
+          beginNextRound(working, randomSource, resolution.stateChanges);
+        }
+        const nextQueue = await resolveTurnQueueUntilPlayerWithDecider(working, randomSource, npcIntentDecider);
+        if (nextQueue.publicText) presentation.publicText = `${presentation.publicText} ${nextQueue.publicText}`.trim();
+        if (nextQueue.systemText) presentation.systemText = `${presentation.systemText} / ${nextQueue.systemText}`.trim();
+        resolution.dangerDelta += nextQueue.dangerDelta;
+        resolution.damage += nextQueue.damage;
+        resolution.stateChanges.push(...nextQueue.stateChanges);
+      }
+
+      if (resolution.dangerDelta !== 0) {
+        working.world.danger = clamp(working.world.danger + resolution.dangerDelta, 0, 9);
+        resolution.stateChanges.push(formatDangerChange(resolution.dangerDelta));
+      }
+      if (resolution.damage > 0) {
+        working.player.hp = clamp(working.player.hp - resolution.damage, 0, MAX_HP);
+        resolution.stateChanges.push(`HP -${resolution.damage}`);
+      }
+      if (working.world.oxygen <= 0 || working.player.hp <= 0) {
+        working.phase = 'failed';
+        presentation.publicText += working.world.oxygen <= 0
+          ? ` ${getCountdownEmptyNarration(working.scenario)}`
+          : ' 疼痛和失血让你再也站不起来。';
+      }
+      if (working.world.flags.escapeLaunched) {
+        working.phase = 'escaped';
+      }
+    }
+  }
+
+  if (skippedTurn && working.phase === 'active') {
+    if (!advanceToNextActor(working)) {
+      beginNextRound(working, randomSource, resolution.stateChanges);
+    }
+    const nextQueue = await resolveTurnQueueUntilPlayerWithDecider(working, randomSource, npcIntentDecider);
+    if (nextQueue.publicText) presentation.publicText = `${presentation.publicText} ${nextQueue.publicText}`.trim();
+    if (nextQueue.systemText) presentation.systemText = `${presentation.systemText} / ${nextQueue.systemText}`.trim();
+    resolution.dangerDelta += nextQueue.dangerDelta;
+    resolution.damage += nextQueue.damage;
+    resolution.stateChanges.push(...nextQueue.stateChanges);
+    if (resolution.dangerDelta !== 0) {
+      working.world.danger = clamp(working.world.danger + nextQueue.dangerDelta, 0, 9);
+    }
+    if (resolution.damage > 0) {
+      working.player.hp = clamp(working.player.hp - nextQueue.damage, 0, MAX_HP);
+    }
+  }
+
+  refreshDerivedState(working);
+  applySecretAgendaProgress(working, parsed.rawIntent, presentation.publicText);
+  working.eventLog.push(createLogEntry(working, parsed.rawIntent, filteredAction, resolution, presentation));
+  refreshDerivedState(working);
+
+  return { session: working, filteredAction, resolution, presentation };
+}
+
 export function deriveObjectiveState(session: GameSession): ObjectiveState {
   if (isDynamicScenario(session.scenario)) {
     return deriveDynamicObjectiveState(session);
   }
+  const activeActor = getCurrentActor(session);
 
   let phase: ObjectiveState['phase'] = 'find-tool';
   let dynamicGuide = `先在${requireLocation(session, 'crew-quarters').label}找到${getItemLabel(session, 'insulated-wrench')}。`;
@@ -441,7 +1352,7 @@ export function deriveObjectiveState(session: GameSession): ObjectiveState {
     macroObjective: session.scenario.macroObjective,
     dynamicGuide,
     phase,
-    countdownLabel: `${session.scenario.countdown.shortLabel} ${session.world.oxygen}/${session.scenario.countdown.max}`,
+    countdownLabel: `${session.scenario.countdown.shortLabel} ${session.world.oxygen}/${session.scenario.countdown.max} | 回合 ${(session.world.currentRound ?? 1)}/${getRoundCapLabel(session)} | 当前 ${activeActor.actorLabel} | AP ${session.world.playerActionPoints ?? 0}`,
     availableActionsHint: listAvailableActions(session),
     secretAgendaStatus: formatSecretAgendaStatus(session)
   };
@@ -515,6 +1426,11 @@ export function listAvailableActions(session: GameSession): string[] {
     hints.push(`前往${requireLocation(session, 'control-room').label}`);
   }
 
+  getNpcsAtPlayerLocation(session).forEach((npc) => {
+    hints.push(`说服${npc.name}`);
+    hints.push(`查看${npc.name}`);
+  });
+
   if (hasItem(session, 'medkit')) {
     hints.push(`使用${getItemLabel(session, 'medkit')}`);
   }
@@ -522,9 +1438,16 @@ export function listAvailableActions(session: GameSession): string[] {
     hints.push(`使用${getItemLabel(session, 'oxygen-canister')}`);
   }
 
+  listSandboxMoveTargets(session).forEach((entry) => {
+    hints.push(`前往${requireLocation(session, entry).label}`);
+  });
+
   hints.push('查看背包');
   hints.push('请求提示');
   return Array.from(new Set(hints)).slice(0, 9);
+}
+function listSandboxMoveTargets(session: GameSession): LocationId[] {
+  return (Object.keys(session.world.locations) as LocationId[]).filter((locationId) => locationId !== session.player.locationId);
 }
 
 export function describeFilteredAction(session: GameSession, action: FilteredAction): string {
@@ -746,6 +1669,340 @@ function moveAction(session: GameSession, action: FilteredAction) {
   );
 }
 
+function resolveNpcAutonomyRound(session: GameSession, randomSource: () => number): NpcTurnOutcome {
+  const npcList = session.scenario.npcs ?? [];
+  if (!npcList.length) {
+    return {
+      publicText: '',
+      systemText: '',
+      dangerDelta: 0,
+      damage: 0,
+      stateChanges: []
+    };
+  }
+
+  const publicSnippets: string[] = [];
+  const systemSnippets: string[] = [];
+  const stateChanges: string[] = [];
+  let dangerDelta = 0;
+  let damage = 0;
+  const publicWorld = {
+    turn: session.world.turn,
+    oxygen: session.world.oxygen,
+    danger: session.world.danger,
+    playerLocationId: session.player.locationId,
+    playerHp: session.player.hp
+  };
+
+  const apPool = session.world.npcActionPoints ?? {};
+  npcList.forEach((npc) => {
+    if (typeof apPool[npc.id] !== 'number') {
+      apPool[npc.id] = getNpcRoundActionPoints(npc);
+    }
+  });
+  session.world.npcActionPoints = apPool;
+
+  let safety = 0;
+  while (safety < 32) {
+    safety += 1;
+    let progressed = false;
+
+    for (const npc of npcList) {
+      if ((apPool[npc.id] ?? 0) <= 0) {
+        continue;
+      }
+
+      ensureNpcPrivateState(npc);
+      const action = decideNpcAction(session, npc, publicWorld, randomSource);
+      const actionType: ActionType =
+        action.type === 'share-clue'
+          ? 'persuade'
+          : action.type === 'pressure'
+            ? 'force'
+            : action.type === 'reposition'
+              ? 'move'
+              : 'inspect';
+      const actionCost = getNpcActionPointCost(npc, actionType);
+
+      if ((apPool[npc.id] ?? 0) < actionCost) {
+        apPool[npc.id] = 0;
+        continue;
+      }
+      const nextAp = (apPool[npc.id] ?? 0) - actionCost;
+      apPool[npc.id] = Math.max(0, nextAp);
+      progressed = true;
+
+      if (action.type === 'share-clue') {
+        npc.status = '压低声音提供了关键信息。';
+        publicSnippets.push(`${npc.name}在${requireLocation(session, npc.locationId).label}提醒你：${npc.clue}`);
+        dangerDelta -= 1;
+        stateChanges.push(`NPC协助：${npc.name}降低了局势压力`);
+      } else if (action.type === 'pressure') {
+        npc.status = '通过言行持续施压。';
+        publicSnippets.push(`${npc.name}忽然逼近一步，明显在试探你的底线。`);
+        dangerDelta += 1;
+        stateChanges.push(`NPC施压：${npc.name}让局势更紧绷`);
+        if (randomSource() < 0.25) {
+          damage += 1;
+          stateChanges.push(`NPC冲突：${npc.name}造成了直接伤害`);
+        }
+      } else if (action.type === 'observe') {
+        npc.status = '保持观察，暂时不直接介入。';
+        if (randomSource() < 0.2) {
+          publicSnippets.push(`${npc.name}没有接话，只是记下了你刚才的动作。`);
+        }
+      } else if (action.type === 'reposition') {
+        const moveCandidates = getNpcMoveCandidates(session, npc.locationId);
+        const nextLocation = pickBestNpcMove(session, npc, moveCandidates, publicWorld, randomSource);
+        if (nextLocation && nextLocation !== npc.locationId) {
+          npc.locationId = nextLocation;
+          npc.status = `已转移到${requireLocation(session, nextLocation).label}附近活动。`;
+        }
+      }
+
+      npc.privateState!.stress = clamp(npc.privateState!.stress + action.stressDelta, 0, 5);
+      npc.privateState!.lastAction = action.type;
+      npc.privateState!.memory = [action.memory, ...npc.privateState!.memory].slice(0, 6);
+      stateChanges.push(`${npc.name} 行动点 -${actionCost}`);
+    }
+
+    if (!progressed) {
+      break;
+    }
+  }
+
+  const pairOutcome = resolveNpcPairInteractions(session, randomSource);
+  publicSnippets.unshift(...pairOutcome.publicSnippets);
+  systemSnippets.push(...pairOutcome.systemSnippets);
+  stateChanges.push(...pairOutcome.stateChanges);
+  dangerDelta += pairOutcome.dangerDelta;
+  damage += pairOutcome.damage;
+
+  if (dangerDelta !== 0 || damage > 0) {
+    systemSnippets.push(`NPC行动轮已结算（危险值${dangerDelta >= 0 ? '+' : ''}${dangerDelta}，伤害+${damage}）。`);
+  }
+
+  return {
+    publicText: publicSnippets.slice(0, 2).join(' '),
+    systemText: systemSnippets.join(' / '),
+    dangerDelta,
+    damage,
+    stateChanges
+  };
+}
+
+function resolveNpcPairInteractions(session: GameSession, randomSource: () => number) {
+  const npcs = session.scenario.npcs ?? [];
+  const byLocation = new Map<LocationId, StoryNpc[]>();
+  npcs.forEach((npc) => {
+    const bucket = byLocation.get(npc.locationId) ?? [];
+    bucket.push(npc);
+    byLocation.set(npc.locationId, bucket);
+  });
+
+  const publicSnippets: string[] = [];
+  const systemSnippets: string[] = [];
+  const stateChanges: string[] = [];
+  let dangerDelta = 0;
+  let damage = 0;
+
+  for (const [locationId, roomNpcs] of byLocation.entries()) {
+    if (roomNpcs.length < 2) {
+      continue;
+    }
+
+    const friendly = roomNpcs.filter((npc) => npc.attitude === 'friendly');
+    const hostile = roomNpcs.filter((npc) => npc.attitude === 'hostile');
+    const locationLabel = requireLocation(session, locationId).label;
+
+    if (friendly.length > 0 && hostile.length > 0 && randomSource() < 0.6) {
+      dangerDelta += 1;
+      publicSnippets.push(`${friendly[0]!.name}和${hostile[0]!.name}在${locationLabel}爆发了激烈争执。`);
+      stateChanges.push(`NPC互斥：${friendly[0]!.name}与${hostile[0]!.name}冲突升级`);
+      continue;
+    }
+
+    if (friendly.length >= 2 && randomSource() < 0.5) {
+      dangerDelta -= 1;
+      publicSnippets.push(`${friendly[0]!.name}和${friendly[1]!.name}在${locationLabel}迅速交换了情报。`);
+      stateChanges.push(`NPC协同：${friendly[0]!.name}与${friendly[1]!.name}稳定了局势`);
+      continue;
+    }
+
+    if (hostile.length >= 2 && randomSource() < 0.5) {
+      damage += 1;
+      publicSnippets.push(`${hostile[0]!.name}和${hostile[1]!.name}的对抗波及到周边，局势更加失控。`);
+      stateChanges.push(`NPC内斗：${hostile[0]!.name}与${hostile[1]!.name}造成连带伤害`);
+      systemSnippets.push(`${locationLabel}发生了高风险 NPC 对抗。`);
+    }
+  }
+
+  return {
+    publicSnippets: publicSnippets.slice(0, 1),
+    systemSnippets,
+    stateChanges,
+    dangerDelta,
+    damage
+  };
+}
+
+function ensureNpcPrivateState(npc: StoryNpc) {
+  if (npc.privateState) {
+    return;
+  }
+  npc.privateState = {
+    coreGoal: npc.hiddenDrive,
+    shortTermGoal: npc.motiveAnchor ?? '先维持自身安全与筹码。',
+    strategy: npc.interactionTips?.[0] ?? '先观察再行动。',
+    stress: 0,
+    memory: [],
+    lastAction: 'observe'
+  };
+}
+
+function decideNpcAction(
+  session: GameSession,
+  npc: StoryNpc,
+  publicWorld: { turn: number; oxygen: number; danger: number; playerLocationId: LocationId; playerHp: number },
+  randomSource: () => number
+) {
+  const sameRoom = npc.locationId === publicWorld.playerLocationId;
+  const privateState = npc.privateState!;
+  const pressureLevel = publicWorld.danger + (publicWorld.oxygen <= 4 ? 1 : 0) + privateState.stress;
+
+  if (sameRoom && npc.attitude === 'friendly' && pressureLevel <= 5) {
+    return {
+      type: 'share-clue' as const,
+      stressDelta: -1,
+      memory: `T${publicWorld.turn}: 与玩家同室并提供合作线索。`
+    };
+  }
+
+  if (sameRoom && npc.attitude === 'hostile') {
+    return {
+      type: 'pressure' as const,
+      stressDelta: 1,
+      memory: `T${publicWorld.turn}: 在${requireLocation(session, npc.locationId).label}对玩家施压。`
+    };
+  }
+
+  if (!sameRoom && shouldTrackPlayer(npc, publicWorld, randomSource)) {
+    return {
+      type: 'reposition' as const,
+      stressDelta: 0,
+      memory: `T${publicWorld.turn}: 尝试调整站位以贴近关键场景。`
+    };
+  }
+
+  return {
+    type: 'observe' as const,
+    stressDelta: pressureLevel >= 6 ? 1 : 0,
+    memory: `T${publicWorld.turn}: 保持观察，等待更有利窗口。`
+  };
+}
+
+function coerceNpcDecision(
+  session: GameSession,
+  npc: StoryNpc,
+  publicWorld: { turn: number; oxygen: number; danger: number; playerLocationId: LocationId; playerHp: number },
+  decision: NpcIntentDecision | null,
+  randomSource: () => number
+) {
+  if (!decision?.intent?.trim() && !decision?.actionType) {
+    return decideNpcAction(session, npc, publicWorld, randomSource);
+  }
+
+  const intent = `${decision.intent ?? ''} ${decision.actionType ?? ''}`.toLowerCase();
+  if (/(施压|逼问|威胁|阻止|force|pressure)/.test(intent)) {
+    return {
+      type: 'pressure' as const,
+      stressDelta: 1,
+      memory: `T${publicWorld.turn}: 基于可见信息决定施压。${decision.reason ?? ''}`.trim()
+    };
+  }
+  if (/(分享|提醒|合作|说服|persuade|clue|线索|协助)/.test(intent)) {
+    return {
+      type: 'share-clue' as const,
+      stressDelta: -1,
+      memory: `T${publicWorld.turn}: 基于可见信息决定协助。${decision.reason ?? ''}`.trim()
+    };
+  }
+  if (/(前往|移动|靠近|追踪|move|go|reposition)/.test(intent)) {
+    return {
+      type: 'reposition' as const,
+      stressDelta: 0,
+      memory: `T${publicWorld.turn}: 基于可见信息决定移动。${decision.reason ?? ''}`.trim()
+    };
+  }
+  if (/(观察|查看|等待|inspect|observe|wait)/.test(intent)) {
+    return {
+      type: 'observe' as const,
+      stressDelta: publicWorld.danger >= 6 ? 1 : 0,
+      memory: `T${publicWorld.turn}: 基于可见信息决定观察。${decision.reason ?? ''}`.trim()
+    };
+  }
+
+  return decideNpcAction(session, npc, publicWorld, randomSource);
+}
+
+function shouldTrackPlayer(
+  npc: StoryNpc,
+  publicWorld: { turn: number; oxygen: number; danger: number; playerLocationId: LocationId; playerHp: number },
+  randomSource: () => number
+) {
+  const privateState = npc.privateState!;
+  const goalSignal = `${privateState.shortTermGoal} ${privateState.strategy}`.toLowerCase();
+  const isInterventionRole = /(控制|监视|跟进|保护|审问|施压|守住|阻止|追)/.test(goalSignal);
+  if (isInterventionRole) {
+    return true;
+  }
+  if (npc.attitude === 'hostile') {
+    return randomSource() < 0.7;
+  }
+  if (npc.attitude === 'friendly' && publicWorld.playerHp <= 1) {
+    return true;
+  }
+  return randomSource() < 0.35;
+}
+
+function pickBestNpcMove(
+  session: GameSession,
+  npc: StoryNpc,
+  moveCandidates: LocationId[],
+  publicWorld: { playerLocationId: LocationId },
+  randomSource: () => number
+) {
+  if (!moveCandidates.length) {
+    return null;
+  }
+
+  const privateState = npc.privateState!;
+  const goalSignal = `${privateState.shortTermGoal} ${privateState.strategy}`.toLowerCase();
+  if (/(跟|追|盯|监视|保护|拦|堵|接触玩家)/.test(goalSignal) && moveCandidates.includes(publicWorld.playerLocationId)) {
+    return publicWorld.playerLocationId;
+  }
+
+  if (npc.attitude === 'hostile' && moveCandidates.includes(publicWorld.playerLocationId)) {
+    return publicWorld.playerLocationId;
+  }
+
+  return moveCandidates[Math.floor(randomSource() * moveCandidates.length)];
+}
+
+function getNpcMoveCandidates(session: GameSession, locationId: LocationId): LocationId[] {
+  const location = session.world.locations[locationId];
+  if (!location) {
+    return listSandboxMoveTargets(session);
+  }
+
+  const connected = location.connected.filter((entry) => entry !== locationId);
+  if (connected.length > 0) {
+    return connected;
+  }
+
+  return listSandboxMoveTargets(session);
+}
+
 function repairAction(session: GameSession, action: FilteredAction, randomSource: () => number) {
   const check = runSkillCheck(session, 'mind', action.type, 102, randomSource, 8);
   const stateChanges: string[] = [];
@@ -945,6 +2202,26 @@ function useItemAction(session: GameSession, action: FilteredAction) {
 }
 
 function persuadeAction(session: GameSession, action: FilteredAction, randomSource: () => number) {
+  if (!action.targetId?.startsWith('npc:')) {
+    const roomNpcs = getNpcsAtPlayerLocation(session);
+    if (roomNpcs.length > 0) {
+      const targetNpc = pickNpcPersuasionTarget(roomNpcs, action.targetLabel);
+      return persuadeNpcAction(
+        session,
+        {
+          ...action,
+          targetId: `npc:${targetNpc.id}`,
+          targetLabel: targetNpc.name
+        },
+        randomSource
+      );
+    }
+  }
+
+  if (action.targetId?.startsWith('npc:')) {
+    return persuadeNpcAction(session, action, randomSource);
+  }
+
   const check = runSkillCheck(session, 'empathy', action.type, 96, randomSource);
   const stateChanges: string[] = [];
 
@@ -967,6 +2244,68 @@ function persuadeAction(session: GameSession, action: FilteredAction, randomSour
   }
 
   return checkedResult(check, '你的话没能让她冷静下来，她反而把更多器械撞翻在地。', '说服失败，危险进一步累积。', stateChanges, 0, 1);
+}
+
+function persuadeNpcAction(session: GameSession, action: FilteredAction, randomSource: () => number) {
+  const npcId = action.targetId?.slice(4);
+  const npc = (session.scenario.npcs ?? []).find((entry) => entry.id === npcId && entry.locationId === session.player.locationId);
+  if (!npc) {
+    return checkedResult(
+      runSkillCheck(session, 'empathy', action.type, 100, randomSource),
+      '你尝试和对方建立对话，但人已经不在眼前。',
+      'NPC目标不存在或已离开当前区域。',
+      [],
+      0,
+      0
+    );
+  }
+
+  ensureNpcPrivateState(npc);
+  const baseDifficulty = npc.attitude === 'hostile' ? 108 : npc.attitude === 'neutral' ? 96 : 88;
+  const check = runSkillCheck(session, 'empathy', action.type, baseDifficulty, randomSource);
+  const stateChanges: string[] = [];
+
+  if (check.tier === 'success') {
+    if (npc.attitude === 'hostile') {
+      npc.attitude = 'neutral';
+      stateChanges.push(`关系变化：${npc.name}对你的敌意降低`);
+    } else if (npc.attitude === 'neutral') {
+      npc.attitude = 'friendly';
+      stateChanges.push(`关系变化：${npc.name}开始愿意协作`);
+    } else {
+      stateChanges.push(`NPC协助：${npc.name}主动给出关键提示`);
+    }
+    npc.status = '被你说动，暂时进入协作姿态。';
+    npc.privateState!.stress = clamp(npc.privateState!.stress - 1, 0, 5);
+    npc.privateState!.memory = [`T${session.world.turn}: 接受了玩家的说服。`, ...npc.privateState!.memory].slice(0, 6);
+    return checkedResult(check, `${npc.name}沉默了几秒，最终选择和你交换信息：“${npc.clue}”`, `${npc.name}对你当前立场有所松动。`, stateChanges, 0, -1);
+  }
+
+  if (check.tier === 'cost') {
+    npc.status = '态度有所波动，但仍保留戒心。';
+    npc.privateState!.stress = clamp(npc.privateState!.stress + 1, 0, 5);
+    npc.privateState!.memory = [`T${session.world.turn}: 与玩家达成了有限沟通。`, ...npc.privateState!.memory].slice(0, 6);
+    return checkedResult(check, `${npc.name}没有完全相信你，但愿意先把话听完。`, `${npc.name}暂时观望，你争取到了一点对话空间。`, stateChanges, 0, 0);
+  }
+
+  npc.status = '拒绝合作，态度更强硬。';
+  npc.privateState!.stress = clamp(npc.privateState!.stress + 1, 0, 5);
+  npc.privateState!.memory = [`T${session.world.turn}: 拒绝了玩家说服。`, ...npc.privateState!.memory].slice(0, 6);
+  return checkedResult(check, `${npc.name}冷冷打断了你，连眼神都没再给你。`, `${npc.name}拒绝配合，局势更紧张。`, stateChanges, 0, 1);
+}
+
+function getNpcsAtPlayerLocation(session: GameSession) {
+  return (session.scenario.npcs ?? []).filter((npc) => npc.locationId === session.player.locationId);
+}
+
+function pickNpcPersuasionTarget(npcs: StoryNpc[], targetLabel: string | undefined) {
+  const normalized = (targetLabel ?? '').trim().toLowerCase();
+  const exact = npcs.find((npc) => npc.name.toLowerCase() === normalized);
+  if (exact) {
+    return exact;
+  }
+  const contains = npcs.find((npc) => normalized && npc.name.toLowerCase().includes(normalized));
+  return contains ?? npcs[0]!;
 }
 
 function runSkillCheck(
@@ -1120,7 +2459,11 @@ function applyStoryFilter(session: GameSession, parsed: ParsedAction): ParsedAct
     };
   }
 
-  if (parsed.type === 'persuade' && (session.player.locationId !== 'med-bay' || !session.world.flags.survivorPresent)) {
+  if (
+    parsed.type === 'persuade' &&
+    getNpcsAtPlayerLocation(session).length === 0 &&
+    (session.player.locationId !== 'med-bay' || !session.world.flags.survivorPresent)
+  ) {
     return {
       ...parsed,
       type: 'inspect',
@@ -1350,6 +2693,10 @@ function filterDynamicAction(session: GameSession, parsed: ParsedAction): Filter
       return rejectAction(parsed, '移动目标不明确。');
     }
 
+    if (!session.world.locations[parsed.locationId]) {
+      return rejectAction(parsed, '这个地点不存在于当前地图。');
+    }
+
     if (parsed.locationId === session.player.locationId) {
       return {
         ...parsed,
@@ -1363,15 +2710,24 @@ function filterDynamicAction(session: GameSession, parsed: ParsedAction): Filter
       };
     }
 
-    if (!currentLocation.connected.includes(parsed.locationId)) {
-      return rejectAction(parsed, '当前区域无法直达那个位置。');
-    }
-
     return { ...parsed, validity: 'accepted' };
   }
 
   if (parsed.type === 'use_item' && parsed.toolId && !hasItem(session, parsed.toolId)) {
     return rejectAction(parsed, `你身上没有${getItemLabel(session, parsed.toolId)}。`);
+  }
+
+  if (parsed.type === 'persuade') {
+    const roomNpcs = getNpcsAtPlayerLocation(session);
+    if (roomNpcs.length > 0) {
+      const targetNpc = pickNpcPersuasionTarget(roomNpcs, parsed.targetLabel);
+      return {
+        ...parsed,
+        targetId: `npc:${targetNpc.id}`,
+        targetLabel: targetNpc.name,
+        validity: 'accepted'
+      };
+    }
   }
 
   return {
@@ -1385,6 +2741,7 @@ function filterDynamicAction(session: GameSession, parsed: ParsedAction): Filter
 function deriveDynamicObjectiveState(session: GameSession): ObjectiveState {
   const beat = getCurrentBeat(session);
   let dynamicGuide = '故事已经来到结尾。';
+  const activeActor = getCurrentActor(session);
 
   if (session.phase === 'escaped') {
     dynamicGuide = `你已经脱离 ${session.scenario.title}，记录这局生还经过。`;
@@ -1398,7 +2755,7 @@ function deriveDynamicObjectiveState(session: GameSession): ObjectiveState {
     macroObjective: session.scenario.macroObjective,
     dynamicGuide,
     phase: session.phase === 'active' ? 'prepare-launch' : 'resolution',
-    countdownLabel: `${session.scenario.countdown.shortLabel} ${session.world.oxygen}/${session.scenario.countdown.max}`,
+    countdownLabel: `${session.scenario.countdown.shortLabel} ${session.world.oxygen}/${session.scenario.countdown.max} | 回合 ${(session.world.currentRound ?? 1)}/${getRoundCapLabel(session)} | 当前 ${activeActor.actorLabel} | AP ${session.world.playerActionPoints ?? 0}`,
     availableActionsHint: listDynamicActions(session),
     secretAgendaStatus: formatSecretAgendaStatus(session)
   };
@@ -1419,7 +2776,12 @@ function listDynamicActions(session: GameSession): string[] {
     }
   }
 
-  currentLocation.connected.forEach((entry) => {
+  getNpcsAtPlayerLocation(session).forEach((npc) => {
+    hints.add(`说服${npc.name}`);
+    hints.add(`查看${npc.name}`);
+  });
+
+  listSandboxMoveTargets(session).forEach((entry) => {
     hints.add(`前往${requireLocation(session, entry).label}`);
   });
 
@@ -1429,6 +2791,37 @@ function listDynamicActions(session: GameSession): string[] {
 
   hints.add('查看背包');
   hints.add('请求提示');
+  return Array.from(hints).slice(0, 9);
+}
+
+function listActorActions(session: GameSession, actorId: string): string[] {
+  if (actorId === PLAYER_ACTOR_ID) {
+    return [...session.objectives.availableActionsHint];
+  }
+
+  const npc = (session.scenario.npcs ?? []).find((entry) => entry.id === actorId);
+  if (!npc) {
+    return [];
+  }
+
+  const location = requireLocation(session, npc.locationId);
+  const hints = new Set<string>();
+  hints.add(`查看${location.label}`);
+  location.connected.forEach((locationId) => hints.add(`前往${requireLocation(session, locationId).label}`));
+
+  if (npc.locationId === session.player.locationId) {
+    hints.add(`和${session.player.archetypeLabel}交涉`);
+    hints.add(`向${session.player.archetypeLabel}施压`);
+  }
+
+  (session.scenario.npcs ?? [])
+    .filter((entry) => entry.id !== npc.id && entry.locationId === npc.locationId)
+    .forEach((entry) => {
+      hints.add(`和${entry.name}交换信息`);
+      hints.add(`观察${entry.name}`);
+    });
+
+  hints.add('保持观察');
   return Array.from(hints).slice(0, 9);
 }
 
@@ -1447,6 +2840,10 @@ function executeDynamicAction(
 
   if (action.type === 'move') {
     return moveAction(session, action);
+  }
+
+  if (action.type === 'persuade' && getNpcsAtPlayerLocation(session).length > 0) {
+    return persuadeNpcAction(session, action, randomSource);
   }
 
   if (action.type === 'inspect' && !isBeatMatch(session, action)) {
@@ -1737,3 +3134,12 @@ function clamp(value: number, min: number, max: number) {
 function formatDangerChange(delta: number) {
   return delta > 0 ? `危险值 +${delta}` : `危险值 ${delta}`;
 }
+
+
+
+
+
+
+
+
+
