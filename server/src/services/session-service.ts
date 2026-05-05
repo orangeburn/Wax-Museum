@@ -2,12 +2,13 @@ import type {
   ActionResponse,
   CreateSessionRequest,
   SessionSnapshot,
+  StoryGameMode,
   StoryOutlineRequest,
   StoryOutlineResponse,
   WriterDraftRequest,
   WriterDraftResponse
 } from '@wax-museum/shared';
-import { buildSnapshot, createNewSession, applyParsedAction } from '../engine/session-engine.js';
+import { buildActorObservation, buildSnapshot, createNewSession, applyParsedActionWithNpcAi } from '../engine/session-engine.js';
 import type { AiService } from './ai.js';
 import { SaveStore } from './save-store.js';
 
@@ -20,16 +21,22 @@ export class SessionService {
 
   async createSession(request: CreateSessionRequest): Promise<SessionSnapshot> {
     const storyPrompt = request.storyPrompt?.trim();
+    const playerCount = clampPlayerCount(request.playerCount);
+    const roundCount = clampRoundCount(request.roundCount);
     const scenario = storyPrompt
       ? await this.aiService.generateScenario({
           templateId: request.templateId,
           archetypeId: request.archetypeId,
-          prompt: storyPrompt
+          prompt: storyPrompt,
+          storyGameMode: normalizeStoryGameMode(request.storyGameMode),
+          playerCount,
+          roundCount: normalizeStoryGameMode(request.storyGameMode) === 'versus' ? undefined : roundCount
         })
       : undefined;
 
     const session = createNewSession({
       ...request,
+      storyGameMode: normalizeStoryGameMode(request.storyGameMode),
       customBackground: request.customBackground.trim(),
       customTag: request.customTag.trim()
     }, scenario);
@@ -44,13 +51,20 @@ export class SessionService {
   async generateStoryOutline(request: StoryOutlineRequest): Promise<StoryOutlineResponse> {
     return this.aiService.generateStoryOutline({
       ...request,
-      prompt: request.prompt.trim()
+      prompt: request.prompt.trim(),
+      storyGameMode: normalizeStoryGameMode(request.storyGameMode),
+      playerCount: clampPlayerCount(request.playerCount),
+      roundCount: normalizeStoryGameMode(request.storyGameMode) === 'versus' ? undefined : clampRoundCount(request.roundCount)
     });
   }
 
   async generateWriterDraft(request: WriterDraftRequest): Promise<WriterDraftResponse> {
     return this.aiService.generateWriterDraft({
-      prompt: request.prompt.trim()
+      prompt: request.prompt.trim(),
+      storyGameMode: normalizeStoryGameMode(request.storyGameMode),
+      playerCount: clampPlayerCount(request.playerCount),
+      roundCount: normalizeStoryGameMode(request.storyGameMode) === 'versus' ? undefined : clampRoundCount(request.roundCount),
+      outline: request.outline
     });
   }
 
@@ -62,7 +76,12 @@ export class SessionService {
   async applyIntent(sessionId: string, intent: string): Promise<ActionResponse> {
     const session = await this.saveStore.read(sessionId);
     const parsed = await this.aiService.intentToAction(session, intent);
-    const executed = applyParsedAction(session, parsed, this.randomSource);
+    const executed = await applyParsedActionWithNpcAi(
+      session,
+      parsed,
+      this.randomSource,
+      ({ session: currentSession, npc }) => this.aiService.decideNpcIntent(buildActorObservation(currentSession, npc.id))
+    );
     const sessionSnapshot = buildSnapshot(executed.session);
     const narration = await this.aiService.composeNarration({
       session: executed.session,
@@ -80,4 +99,25 @@ export class SessionService {
       narration
     };
   }
+}
+
+function clampPlayerCount(input: number | undefined) {
+  if (typeof input !== 'number' || !Number.isFinite(input)) {
+    return 1;
+  }
+  return Math.max(1, Math.min(6, Math.round(input)));
+}
+
+function clampRoundCount(input: number | undefined) {
+  if (typeof input !== 'number' || !Number.isFinite(input)) {
+    return 8;
+  }
+  return Math.max(4, Math.min(20, Math.round(input)));
+}
+
+function normalizeStoryGameMode(input: StoryGameMode | undefined): StoryGameMode {
+  if (input === 'puzzle' || input === 'versus') {
+    return input;
+  }
+  return 'survival';
 }

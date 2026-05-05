@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createNewSession, applyParsedAction } from '../src/engine/session-engine.js';
+import { applyParsedAction, applyParsedActionWithNpcAi, buildActorObservation, buildSnapshot, createNewSession } from '../src/engine/session-engine.js';
 import { LocalAiService } from '../src/services/ai.js';
 
 describe('session engine', () => {
@@ -16,7 +16,110 @@ describe('session engine', () => {
     expect(session.objectives.dynamicGuide).toContain('绝缘扳手');
   });
 
-  it('redirects impossible early movement and rejects invalid repairs', async () => {
+  it('builds round order from 2d6 initiative and keeps action points within a 2-point spread', () => {
+    const session = createNewSession({
+      templateId: 'submarine-escape',
+      archetypeId: 'engineer',
+      selectedRole: {
+        id: 'role-player',
+        archetypeId: 'engineer',
+        label: '调查工程师',
+        publicIdentity: '你负责排查事故设备链路。',
+        hiddenDrive: '你怀疑有人提前动过系统。',
+        relationshipHook: '你和现场一人共享一段被压下的事故记忆。',
+        specialty: '复盘日志与设备异常',
+        suggestedTag: '冷静',
+        suggestedBackground: '你带着旧案留下的愧疚回来。',
+        stats: { physique: 2, mind: 4, empathy: 2 },
+        startingItems: ['insulated-wrench'],
+        coreTag: '冷静',
+        secretAgenda: {
+          title: '私密任务',
+          description: '查清谁改写了记录。',
+          successHint: '多追日志和旧案。',
+          triggerKeywords: ['日志', '旧案'],
+          requiredProgress: 2
+        }
+      },
+      generatedRoles: [
+        {
+          id: 'role-player',
+          archetypeId: 'engineer',
+          label: '调查工程师',
+          publicIdentity: '你负责排查事故设备链路。',
+          hiddenDrive: '你怀疑有人提前动过系统。',
+          relationshipHook: '你和现场一人共享一段被压下的事故记忆。',
+          specialty: '复盘日志与设备异常',
+          suggestedTag: '冷静',
+          suggestedBackground: '你带着旧案留下的愧疚回来。',
+          stats: { physique: 2, mind: 4, empathy: 2 },
+          startingItems: ['insulated-wrench'],
+          coreTag: '冷静',
+          secretAgenda: {
+            title: '私密任务',
+            description: '查清谁改写了记录。',
+            successHint: '多追日志和旧案。',
+            triggerKeywords: ['日志', '旧案'],
+            requiredProgress: 2
+          }
+        },
+        {
+          id: 'role-npc-a',
+          archetypeId: 'medic',
+          label: '联络员',
+          publicIdentity: '后勤接口人',
+          hiddenDrive: '确保信息可控',
+          relationshipHook: '你知道谁在撒谎。',
+          specialty: '协调口径',
+          suggestedTag: '说客',
+          suggestedBackground: '你想保住自己的位置。',
+          stats: { physique: 2, mind: 3, empathy: 4 },
+          startingItems: ['medkit'],
+          coreTag: '说客',
+          secretAgenda: {
+            title: '私密任务',
+            description: '稳住局面。',
+            successHint: '先合作后套话。',
+            triggerKeywords: ['合作', '口径'],
+            requiredProgress: 2
+          }
+        },
+        {
+          id: 'role-npc-b',
+          archetypeId: 'security',
+          label: '守望者',
+          publicIdentity: '值班记录员',
+          hiddenDrive: '阻止任何人离开',
+          relationshipHook: '你见过事故发生前最后一次换岗。',
+          specialty: '施压与封控',
+          suggestedTag: '钢铁意志',
+          suggestedBackground: '你认定有人必须被留下。',
+          stats: { physique: 4, mind: 2, empathy: 1 },
+          startingItems: ['oxygen-canister'],
+          coreTag: '钢铁意志',
+          secretAgenda: {
+            title: '私密任务',
+            description: '别让任何人轻松脱身。',
+            successHint: '卡住关键出口。',
+            triggerKeywords: ['出口', '封控'],
+            requiredProgress: 2
+          }
+        }
+      ],
+      customBackground: '',
+      customTag: ''
+    });
+
+    const actorAps = [
+      session.world.playerActionPoints ?? 0,
+      ...Object.values(session.world.npcActionPoints ?? {})
+    ];
+
+    expect(Math.max(...actorAps) - Math.min(...actorAps)).toBeLessThanOrEqual(2);
+    expect((session.world.turnOrder ?? []).every((entry) => entry.initiative >= 2 && entry.initiative <= 12)).toBe(true);
+  });
+
+  it('allows sandbox movement and still story-filters invalid repairs', async () => {
     const ai = new LocalAiService();
     const session = createNewSession({
       templateId: 'submarine-escape',
@@ -27,9 +130,10 @@ describe('session engine', () => {
 
     const redirectAttempt = await ai.intentToAction(session, '我直接前往逃生舱');
     const redirected = applyParsedAction(session, redirectAttempt, () => 0.5);
-    expect(redirected.filteredAction.validity).toBe('redirected');
-    expect(redirected.filteredAction.type).toBe('inspect');
-    expect(redirected.session.world.oxygen).toBe(12);
+    expect(redirected.filteredAction.validity).toBe('accepted');
+    expect(redirected.filteredAction.type).toBe('move');
+    expect(redirected.session.player.locationId).toBe('escape-bay');
+    expect(redirected.session.world.oxygen).toBe(11);
 
     const invalidRepair = await ai.intentToAction(session, '我现在修理主继电器');
     const rejected = applyParsedAction(session, invalidRepair, () => 0.5);
@@ -51,8 +155,232 @@ describe('session engine', () => {
     const result = applyParsedAction(session, parsed, () => 0);
 
     expect(result.resolution.tier).toBe('fail');
-    expect(result.session.world.oxygen).toBe(11);
+    expect(result.session.world.oxygen).toBe(12);
     expect(result.session.world.danger).toBe(1);
+  });
+
+  it('runs an NPC autonomy turn after movement', () => {
+    const session = createNewSession({
+      templateId: 'submarine-escape',
+      archetypeId: 'engineer',
+      customBackground: '',
+      customTag: ''
+    });
+
+    session.scenario.npcs = [
+      {
+        id: 'npc-warden',
+        name: '守望者',
+        publicIdentity: '值班记录员',
+        hiddenDrive: '阻止任何人离开',
+        attitude: 'hostile',
+        locationId: 'engine-room',
+        clue: '他不断重复“谁都别想离开”。',
+        status: '态度强硬，持续施压。'
+      }
+    ];
+    session.world.playerActionPoints = 2;
+    session.world.npcActionPoints = { 'npc-warden': 2 };
+    session.world.turnOrder = [
+      { actorId: 'player', actorLabel: session.player.archetypeLabel, actorType: 'player', initiative: 12 },
+      { actorId: 'npc-warden', actorLabel: '守望者', actorType: 'npc', initiative: 8 }
+    ];
+    session.world.activeActorId = 'player';
+
+    const moved = applyParsedAction(
+      session,
+      {
+        type: 'move',
+        rawIntent: '前往机轮舱',
+        normalizedIntent: '前往机轮舱',
+        targetLabel: '机轮舱',
+        locationId: 'engine-room',
+        consumesTurn: true
+      },
+      () => 0.99
+    );
+
+    expect(moved.session.player.locationId).toBe('engine-room');
+    expect(moved.session.world.oxygen).toBe(11);
+    expect(moved.session.world.danger).toBe(1);
+    expect(moved.presentation.publicText).toContain('守望者');
+    expect(moved.resolution.stateChanges.join(' / ')).toContain('NPC施压');
+  });
+
+  it('builds NPC observations without leaking hidden drives to the player snapshot', () => {
+    const session = createNewSession({
+      templateId: 'submarine-escape',
+      archetypeId: 'engineer',
+      customBackground: '',
+      customTag: ''
+    });
+    session.scenario.npcs = [
+      {
+        id: 'npc-hidden',
+        name: '守望者',
+        publicIdentity: '值班记录员',
+        hiddenDrive: '阻止任何人离开',
+        attitude: 'hostile',
+        locationId: session.player.locationId,
+        clue: '“谁都别想离开。”',
+        status: '态度强硬，持续施压。',
+        privateState: {
+          coreGoal: '阻止任何人离开',
+          shortTermGoal: '贴近玩家并制造压力',
+          strategy: '施压',
+          stress: 1,
+          memory: ['看见玩家醒来']
+        }
+      }
+    ];
+    session.world.playerActionPoints = 2;
+    session.world.npcActionPoints = { 'npc-helper': 3 };
+    session.world.turnOrder = [
+      { actorId: 'player', actorLabel: session.player.archetypeLabel, actorType: 'player', initiative: 12 },
+      { actorId: 'npc-helper', actorLabel: '联络员', actorType: 'npc', initiative: 8 }
+    ];
+    session.world.activeActorId = 'player';
+    session.world.playerActionPoints = 2;
+
+    const snapshot = buildSnapshot(session);
+    const npcSnapshot = snapshot.scenario.npcs?.[0];
+    expect(npcSnapshot?.hiddenDrive).toBe('未知');
+    expect(npcSnapshot?.privateState).toBeUndefined();
+
+    const observation = buildActorObservation(session, 'npc-hidden');
+    expect(observation.privateBrief?.coreGoal).toBe('阻止任何人离开');
+    expect((observation.visibleNpcs[0] as { hiddenDrive?: string } | undefined)?.hiddenDrive).toBeUndefined();
+  });
+
+  it('lets an async NPC intent decider drive NPC actions from observation', async () => {
+    const session = createNewSession({
+      templateId: 'submarine-escape',
+      archetypeId: 'engineer',
+      customBackground: '',
+      customTag: ''
+    });
+    session.scenario.npcs = [
+      {
+        id: 'npc-helper',
+        name: '联络员',
+        publicIdentity: '后勤接口人',
+        hiddenDrive: '确保信息可控',
+        attitude: 'neutral',
+        locationId: 'engine-room',
+        clue: '“先看供能，再谈撤离。”',
+        status: '保持观望，暂不表态。'
+      }
+    ];
+    session.world.playerActionPoints = 2;
+    session.world.npcActionPoints = { 'npc-helper': 3 };
+    session.world.turnOrder = [
+      { actorId: 'player', actorLabel: session.player.archetypeLabel, actorType: 'player', initiative: 12 },
+      { actorId: 'npc-helper', actorLabel: '联络员', actorType: 'npc', initiative: 8 }
+    ];
+    session.world.activeActorId = 'player';
+
+    const result = await applyParsedActionWithNpcAi(
+      session,
+      {
+        type: 'move',
+        rawIntent: '前往机轮舱',
+        normalizedIntent: '前往机轮舱',
+        targetLabel: '机轮舱',
+        locationId: 'engine-room',
+        consumesTurn: true
+      },
+      () => 0.99,
+      async ({ observation }) => {
+        expect(observation.actorId).toBe('npc-helper');
+        expect(observation.privateBrief?.coreGoal).toBe('确保信息可控');
+        return {
+          intent: '向玩家分享线索',
+          actionType: 'persuade',
+          reason: '玩家进入了我所在的位置'
+        };
+      }
+    );
+
+    expect(result.presentation.publicText).toContain('联络员');
+    expect(result.resolution.stateChanges.join(' / ')).toContain('NPC协助');
+  });
+
+  it('allows player to interact with an NPC in the same room', () => {
+    const session = createNewSession({
+      templateId: 'submarine-escape',
+      archetypeId: 'engineer',
+      customBackground: '',
+      customTag: ''
+    });
+
+    session.player.locationId = 'engine-room';
+    session.scenario.npcs = [
+      {
+        id: 'npc-sentry',
+        name: '哨兵',
+        publicIdentity: '值班员',
+        hiddenDrive: '监视所有进出者',
+        attitude: 'neutral',
+        locationId: 'engine-room',
+        clue: '“你最好先确认供能状态。”',
+        status: '保持观望，暂不表态。'
+      }
+    ];
+
+    const result = applyParsedAction(session, {
+      type: 'persuade',
+      rawIntent: '说服哨兵',
+      normalizedIntent: '说服哨兵',
+      targetLabel: '哨兵',
+      consumesTurn: true
+    }, () => 0.99);
+
+    expect(result.filteredAction.validity).toBe('accepted');
+    expect(result.session.scenario.npcs?.[0]?.attitude).toBe('friendly');
+    expect(result.presentation.publicText).toContain('哨兵');
+  });
+
+  it('resolves npc-to-npc interactions when they share a location', () => {
+    const session = createNewSession({
+      templateId: 'submarine-escape',
+      archetypeId: 'engineer',
+      customBackground: '',
+      customTag: ''
+    });
+
+    session.scenario.npcs = [
+      {
+        id: 'npc-a',
+        name: '联络员',
+        publicIdentity: '后勤接口人',
+        hiddenDrive: '确保信息可控',
+        attitude: 'friendly',
+        locationId: 'engine-room',
+        clue: '“不要把话说死。”',
+        status: '正在尝试建立合作。'
+      },
+      {
+        id: 'npc-b',
+        name: '守望者',
+        publicIdentity: '值班记录员',
+        hiddenDrive: '阻止任何人离开',
+        attitude: 'hostile',
+        locationId: 'engine-room',
+        clue: '“谁都别想离开。”',
+        status: '态度强硬，持续施压。'
+      }
+    ];
+
+    const moved = applyParsedAction(session, {
+      type: 'move',
+      rawIntent: '前往机轮舱',
+      normalizedIntent: '前往机轮舱',
+      targetLabel: '机轮舱',
+      locationId: 'engine-room',
+      consumesTurn: true
+    }, () => 0.2);
+
+    expect(moved.resolution.stateChanges.join(' / ')).toContain('NPC互斥');
   });
 
   it('can finish the full escape route', async () => {
@@ -349,3 +677,4 @@ describe('session engine', () => {
     expect(stall?.publicText).not.toBe(beg?.publicText);
   });
 });
+

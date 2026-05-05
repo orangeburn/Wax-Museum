@@ -29,6 +29,7 @@ export type ObjectivePhase =
   | 'resolution';
 export type SkillKey = 'physique' | 'mind' | 'empathy';
 export type GameplayMode = 'template' | 'llm';
+export type StoryGameMode = 'survival' | 'puzzle' | 'versus';
 export type TagId =
   | '机械直觉'
   | '战地急救'
@@ -141,15 +142,58 @@ export interface SecretAgenda {
   status: 'active' | 'completed' | 'failed';
 }
 
+export interface RoleSettingPack {
+  coreBelief: string;
+  immediateNeed: string;
+  longTermNeed: string;
+  stressBehaviors: string[];
+  behaviorPrinciples: string[];
+  actionTendencies: string[];
+  environmentPlaybook: {
+    confined: string;
+    social: string;
+    highPressure: string;
+  };
+  interactionGuide: {
+    trustGain: string;
+    trustBreak: string;
+    bargainingChip: string;
+    tabooTopics: string[];
+  };
+}
+
+export interface StoryNpc {
+  id: string;
+  name: string;
+  publicIdentity: string;
+  hiddenDrive: string;
+  attitude: 'friendly' | 'neutral' | 'hostile';
+  locationId: LocationId;
+  clue: string;
+  status: string;
+  motiveAnchor?: string;
+  interactionTips?: string[];
+  privateState?: {
+    coreGoal: string;
+    shortTermGoal: string;
+    strategy: string;
+    stress: number;
+    memory: string[];
+    lastAction?: string;
+  };
+}
+
 export interface StoryScenario {
   id: string;
   title: string;
   premise: string;
   openingLine: string;
   macroObjective: string;
+  storyGameMode?: StoryGameMode;
   countdown: CountdownPresentation;
   gameplayMode?: GameplayMode;
   beats?: StoryBeat[];
+  npcs?: StoryNpc[];
   locations: Record<LocationId, LocationDefinition>;
   glossary: ScenarioGlossary;
 }
@@ -167,6 +211,7 @@ export interface PlayerCharacter {
   inventory: ItemId[];
   locationId: LocationId;
   secretAgenda?: SecretAgenda | null;
+  settingPack?: RoleSettingPack | null;
 }
 
 export interface WorldFlags {
@@ -183,11 +228,24 @@ export interface WorldFlags {
   survivorHelped: boolean;
 }
 
+export interface TurnOrderEntry {
+  actorId: string;
+  actorLabel: string;
+  actorType: 'player' | 'npc';
+  initiative: number;
+}
+
 export interface WorldState {
   templateId: TemplateId;
   oxygen: number;
   danger: number;
   turn: number;
+  maxRounds?: number;
+  currentRound?: number;
+  playerActionPoints?: number;
+  npcActionPoints?: Record<string, number>;
+  turnOrder?: TurnOrderEntry[];
+  activeActorId?: string;
   storyBeatIndex?: number;
   locations: Record<LocationId, LocationDefinition>;
   visitedLocations: LocationId[];
@@ -289,7 +347,11 @@ export interface CreateSessionRequest {
   templateId: TemplateId;
   archetypeId: ArchetypeId;
   storyPrompt?: string;
+  storyGameMode?: StoryGameMode;
+  playerCount?: number;
+  roundCount?: number;
   selectedRole?: SelectedRoleProfile;
+  generatedRoles?: SelectedRoleProfile[];
   customBackground: string;
   customTag: string;
 }
@@ -298,6 +360,9 @@ export interface StoryOutlineRequest {
   templateId: TemplateId;
   archetypeId: ArchetypeId;
   prompt: string;
+  storyGameMode?: StoryGameMode;
+  playerCount?: number;
+  roundCount?: number;
 }
 
 export interface StoryOutlineResponse {
@@ -306,6 +371,7 @@ export interface StoryOutlineResponse {
   twist: string;
   secret: string;
   openingHook: string;
+  modeGoal?: string;
   suggestedBackground: string;
   suggestedTags: string[];
 }
@@ -314,10 +380,17 @@ export interface StoryScenarioRequest {
   templateId: TemplateId;
   archetypeId: ArchetypeId;
   prompt: string;
+  storyGameMode?: StoryGameMode;
+  playerCount?: number;
+  roundCount?: number;
 }
 
 export interface WriterDraftRequest {
   prompt: string;
+  storyGameMode?: StoryGameMode;
+  playerCount?: number;
+  roundCount?: number;
+  outline?: StoryOutlineResponse;
 }
 
 export interface WriterRole {
@@ -334,11 +407,13 @@ export interface WriterRole {
   startingItems: ItemId[];
   coreTag: TagId;
   secretAgenda: Omit<SecretAgenda, 'progress' | 'status'>;
+  settingPack?: RoleSettingPack;
 }
 
 export interface StoryBible {
   title: string;
   genre: string;
+  storyGameMode?: StoryGameMode;
   playerCountLabel: string;
   premise: string;
   background: string;
@@ -368,6 +443,7 @@ export interface SelectedRoleProfile {
   startingItems: ItemId[];
   coreTag: TagId;
   secretAgenda: Omit<SecretAgenda, 'progress' | 'status'>;
+  settingPack?: RoleSettingPack;
 }
 
 export interface ActionRequest {
@@ -379,4 +455,51 @@ export interface ActionResponse {
   resolution: Resolution;
   sessionSnapshot: SessionSnapshot;
   narration: NarrationPayload;
+}
+
+export interface ActorObservation {
+  actorId: string;
+  actorType: 'player' | 'npc';
+  actorLabel: string;
+  currentLocation: LocationDefinition;
+  visibleLocations: LocationDefinition[];
+  visibleNpcs: Array<{
+    id: string;
+    name: string;
+    publicIdentity: string;
+    attitude: StoryNpc['attitude'];
+    locationId: LocationId;
+    status: string;
+    clue?: string;
+  }>;
+  publicWorld: {
+    turn: number;
+    currentRound?: number;
+    maxRounds?: number;
+    countdownLabel: string;
+    countdownValue: number;
+    danger: number;
+    activeActorId?: string;
+  };
+  playerPublic: {
+    locationId: LocationId;
+    hp: number;
+    san: number;
+  };
+  inventory: ItemId[];
+  availableActionsHint: string[];
+  recentPublicEvents: string[];
+  privateBrief?: {
+    coreGoal: string;
+    shortTermGoal: string;
+    strategy: string;
+    stress: number;
+    memory: string[];
+  };
+}
+
+export interface NpcIntentDecision {
+  intent: string;
+  actionType?: ActionType;
+  reason?: string;
 }
