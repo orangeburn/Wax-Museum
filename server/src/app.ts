@@ -3,6 +3,7 @@ import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnvFile } from './config/env.js';
+import { withLlmRequestConfig } from './config/llm-request-context.js';
 import { LocalAiService } from './services/ai.js';
 import { createSessionRouter } from './routes/sessions.js';
 import { SaveStore, SessionNotFoundError } from './services/save-store.js';
@@ -23,6 +24,7 @@ export function createApp(options: AppOptions = {}) {
 
   app.use(cors());
   app.use(express.json());
+  app.use((request, _response, next) => withLlmRequestConfig(request, next));
   app.get('/health', (_request, response) => {
     response.json({ ok: true });
   });

@@ -3,6 +3,7 @@ import { HomePage } from './pages/HomePage';
 import { CreatePage } from './pages/CreatePage';
 import { DraftPage } from './pages/DraftPage';
 import { GamePage } from './pages/GamePage';
+import { ApiKeySettings } from './components/ApiKeySettings';
 
 export function AppRoutes() {
   return (
@@ -18,6 +19,7 @@ export function AppRoutes() {
 export default function App() {
   return (
     <BrowserRouter>
+      <ApiKeySettings />
       <AppRoutes />
     </BrowserRouter>
   );

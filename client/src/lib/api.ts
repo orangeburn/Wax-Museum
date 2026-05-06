@@ -8,8 +8,10 @@ import type {
   WriterDraftRequest,
   WriterDraftResponse
 } from '@wax-museum/shared';
+import { readLlmSettings } from './llm-settings';
 
 const DEV_API_FALLBACKS = ['http://127.0.0.1:8787', 'http://localhost:8787'];
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.trim().replace(/\/+$/, '') ?? '';
 
 export class ApiResponseError extends Error {
   constructor(message: string) {
@@ -19,11 +21,19 @@ export class ApiResponseError extends Error {
 }
 
 function buildRequestInit(init?: RequestInit): RequestInit {
+  const headers = new Headers(init?.headers);
+  headers.set('Content-Type', headers.get('Content-Type') ?? 'application/json');
+
+  const llmSettings = readLlmSettings();
+  if (llmSettings.apiKey) {
+    headers.set('X-LLM-API-Key', llmSettings.apiKey);
+    headers.set('X-LLM-Model', llmSettings.model);
+    headers.set('X-LLM-Base-URL', llmSettings.baseUrl);
+  }
+
   return {
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    ...init
+    ...init,
+    headers
   };
 }
 
@@ -33,8 +43,9 @@ function withBaseUrl(path: string, baseUrl: string) {
 
 async function fetchWithFallback(input: string, init?: RequestInit) {
   const requestInit = buildRequestInit(init);
+  const resolvedInput = API_BASE_URL && input.startsWith('/api') ? withBaseUrl(input, API_BASE_URL) : input;
 
-  if (import.meta.env.DEV && input.startsWith('/api')) {
+  if (import.meta.env.DEV && !API_BASE_URL && input.startsWith('/api')) {
     let lastError: unknown;
 
     for (const baseUrl of DEV_API_FALLBACKS) {
@@ -58,9 +69,9 @@ async function fetchWithFallback(input: string, init?: RequestInit) {
   }
 
   try {
-    return await fetch(input, requestInit);
+    return await fetch(resolvedInput, requestInit);
   } catch (error) {
-    if (!import.meta.env.DEV || !input.startsWith('/api')) {
+    if (!import.meta.env.DEV || API_BASE_URL || !input.startsWith('/api')) {
       throw error;
     }
 

@@ -31,6 +31,7 @@ import {
   type WriterRole
 } from '@wax-museum/shared';
 import type { EnginePresentation } from '../engine/session-engine.js';
+import { getLlmApiKey, getLlmBaseUrlOverride, getLlmModel } from '../config/llm-request-context.js';
 
 const FREE_ACTIONS = new Set<ActionType>(['inspect', 'inventory', 'help']);
 const DEFAULT_LLM_BASE_URL = 'https://api.openai.com/v1';
@@ -89,7 +90,9 @@ export class LocalAiService implements AiService {
   }
 
   async decideNpcIntent(observation: ActorObservation): Promise<NpcIntentDecision | null> {
-    if (!process.env.LLM_API_KEY || !process.env.LLM_MODEL) {
+    const apiKey = getLlmApiKey();
+    const model = getLlmModel();
+    if (!apiKey || !model) {
       return null;
     }
 
@@ -98,10 +101,10 @@ export class LocalAiService implements AiService {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${process.env.LLM_API_KEY}`
+          Authorization: `Bearer ${apiKey}`
         },
         body: JSON.stringify({
-          model: process.env.LLM_MODEL,
+          model,
           messages: [
             {
               role: 'system',
@@ -143,8 +146,8 @@ export class LocalAiService implements AiService {
   }
 
   async generateStoryOutline(input: StoryOutlineRequest): Promise<StoryOutlineResponse> {
-    if (!process.env.LLM_API_KEY || !process.env.LLM_MODEL) {
-      throw new Error('未配置自定义故事生成模型，请检查 .env 中的 LLM_API_KEY 和 LLM_MODEL。');
+    if (!getLlmApiKey() || !getLlmModel()) {
+      throw new Error('未配置自定义故事生成模型。请先在右上角填写 API Key 与模型，或在服务端 .env 中配置 LLM_API_KEY 和 LLM_MODEL。');
     }
     return requestStoryOutlineFromLlm(input);
   }
@@ -178,8 +181,8 @@ export class LocalAiService implements AiService {
       throw new Error('请先输入一句故事 Prompt。');
     }
 
-    if (!process.env.LLM_API_KEY || !process.env.LLM_MODEL) {
-      throw new Error('未配置自定义故事生成模型，请检查 .env 中的 LLM_API_KEY 和 LLM_MODEL。');
+    if (!getLlmApiKey() || !getLlmModel()) {
+      throw new Error('未配置自定义故事生成模型。请先在右上角填写 API Key 与模型，或在服务端 .env 中配置 LLM_API_KEY 和 LLM_MODEL。');
     }
 
     const startedAt = Date.now();
@@ -298,7 +301,9 @@ async function requestStoryOutlineFromLlm(input: StoryOutlineRequest): Promise<S
 }
 
 async function parseDynamicIntentWithLlm(session: GameSession, intent: string): Promise<ParsedAction | null> {
-  if (!process.env.LLM_API_KEY || !process.env.LLM_MODEL) {
+  const apiKey = getLlmApiKey();
+  const model = getLlmModel();
+  if (!apiKey || !model) {
     return null;
   }
 
@@ -310,13 +315,13 @@ async function parseDynamicIntentWithLlm(session: GameSession, intent: string): 
   try {
     const response = await fetchLlmChatCompletions({
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${process.env.LLM_API_KEY}`
-      },
-      body: JSON.stringify({
-        model: process.env.LLM_MODEL,
-        messages: [
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
           {
             role: 'system',
             content:
@@ -638,14 +643,16 @@ function inferCountdownPressure(prompt: string, roundCount: number) {
 }
 
 async function requestLlmObject(systemPrompt: string, userPayload: unknown): Promise<unknown> {
+  const apiKey = requireLlmApiKey();
+  const model = requireLlmModel();
   const response = await fetchLlmChatCompletions({
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${process.env.LLM_API_KEY}`
+      Authorization: `Bearer ${apiKey}`
     },
     body: JSON.stringify({
-      model: process.env.LLM_MODEL,
+      model,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: JSON.stringify(userPayload) }
@@ -685,14 +692,16 @@ async function parseLlmJsonWithRepair(content: string): Promise<unknown> {
 }
 
 async function requestJsonRepairFromLlm(brokenContent: string): Promise<string> {
+  const apiKey = requireLlmApiKey();
+  const model = requireLlmModel();
   const response = await fetchLlmChatCompletions({
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${process.env.LLM_API_KEY}`
+      Authorization: `Bearer ${apiKey}`
     },
     body: JSON.stringify({
-      model: process.env.LLM_MODEL,
+      model,
       messages: [
         {
           role: 'system',
@@ -792,8 +801,24 @@ function parseRetryAfterMs(raw: string | null | undefined) {
 }
 
 function getLlmBaseUrl() {
-  const configured = process.env.LLM_BASE_URL?.trim() || DEFAULT_LLM_BASE_URL;
+  const configured = getLlmBaseUrlOverride()?.trim() || DEFAULT_LLM_BASE_URL;
   return configured.replace(/\/+$/, '');
+}
+
+function requireLlmApiKey() {
+  const apiKey = getLlmApiKey();
+  if (!apiKey) {
+    throw new Error('未配置 LLM_API_KEY。');
+  }
+  return apiKey;
+}
+
+function requireLlmModel() {
+  const model = getLlmModel();
+  if (!model) {
+    throw new Error('未配置 LLM_MODEL。');
+  }
+  return model;
 }
 
 function getLlmTimeoutMs() {

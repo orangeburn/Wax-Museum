@@ -45,7 +45,8 @@ function createBaseSnapshot(): SessionSnapshot {
           description: '测试船员舱',
           atmosphere: '测试氛围',
           connected: ['engine-room', 'med-bay'],
-          pointsOfInterest: ['储物柜']
+          pointsOfInterest: ['储物柜'],
+          sceneObjects: []
         },
         'engine-room': {
           id: 'engine-room',
@@ -53,7 +54,8 @@ function createBaseSnapshot(): SessionSnapshot {
           description: '测试机轮舱',
           atmosphere: '火花乱跳',
           connected: ['crew-quarters', 'control-room'],
-          pointsOfInterest: ['主继电器']
+          pointsOfInterest: ['主继电器'],
+          sceneObjects: []
         },
         'med-bay': {
           id: 'med-bay',
@@ -61,7 +63,8 @@ function createBaseSnapshot(): SessionSnapshot {
           description: '测试医务舱',
           atmosphere: '药剂气味',
           connected: ['crew-quarters'],
-          pointsOfInterest: ['急救柜']
+          pointsOfInterest: ['急救柜'],
+          sceneObjects: []
         },
         'control-room': {
           id: 'control-room',
@@ -69,7 +72,8 @@ function createBaseSnapshot(): SessionSnapshot {
           description: '测试控制室',
           atmosphere: '灯光闪烁',
           connected: ['engine-room'],
-          pointsOfInterest: ['主控终端', '封闭闸门']
+          pointsOfInterest: ['主控终端', '封闭闸门'],
+          sceneObjects: []
         },
         'escape-bay': {
           id: 'escape-bay',
@@ -77,7 +81,8 @@ function createBaseSnapshot(): SessionSnapshot {
           description: '测试逃生舱',
           atmosphere: '等待发射',
           connected: ['control-room'],
-          pointsOfInterest: ['逃生艇']
+          pointsOfInterest: ['逃生艇'],
+          sceneObjects: []
         }
       }
     },
@@ -129,7 +134,8 @@ function createBaseSnapshot(): SessionSnapshot {
           description: '测试船员舱',
           atmosphere: '测试氛围',
           connected: ['engine-room', 'med-bay'],
-          pointsOfInterest: ['储物柜']
+          pointsOfInterest: ['储物柜'],
+          sceneObjects: []
         },
         'engine-room': {
           id: 'engine-room',
@@ -137,7 +143,8 @@ function createBaseSnapshot(): SessionSnapshot {
           description: '测试机轮舱',
           atmosphere: '火花乱跳',
           connected: ['crew-quarters', 'control-room'],
-          pointsOfInterest: ['主继电器']
+          pointsOfInterest: ['主继电器'],
+          sceneObjects: []
         },
         'med-bay': {
           id: 'med-bay',
@@ -145,7 +152,8 @@ function createBaseSnapshot(): SessionSnapshot {
           description: '测试医务舱',
           atmosphere: '药剂气味',
           connected: ['crew-quarters'],
-          pointsOfInterest: ['急救柜']
+          pointsOfInterest: ['急救柜'],
+          sceneObjects: []
         },
         'control-room': {
           id: 'control-room',
@@ -153,7 +161,8 @@ function createBaseSnapshot(): SessionSnapshot {
           description: '测试控制室',
           atmosphere: '灯光闪烁',
           connected: ['engine-room'],
-          pointsOfInterest: ['主控终端', '封闭闸门']
+          pointsOfInterest: ['主控终端', '封闭闸门'],
+          sceneObjects: []
         },
         'escape-bay': {
           id: 'escape-bay',
@@ -161,7 +170,8 @@ function createBaseSnapshot(): SessionSnapshot {
           description: '测试逃生舱',
           atmosphere: '等待发射',
           connected: ['control-room'],
-          pointsOfInterest: ['逃生艇']
+          pointsOfInterest: ['逃生艇'],
+          sceneObjects: []
         }
       }
     },

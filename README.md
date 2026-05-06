@@ -63,6 +63,8 @@ LLM_BASE_URL=https://api.moonshot.cn/v1
 
 未配置模型时，默认模板玩法仍可运行，但自定义故事生成会直接报错。
 
+公网测试时不建议把自己的 LLM 密钥写入服务端环境变量。前端右上角提供常驻的 API Key 入口，访客可以填入自己的 `API Key`、`模型` 和 `Base URL`。这些信息只保存在访客浏览器的 `localStorage` 中，请求时通过 `X-LLM-API-Key`、`X-LLM-Model`、`X-LLM-Base-URL` 临时传给后端，服务端不会写入存档。
+
 自定义故事当前可通过一次生成获得可开玩的初始内容（剧本与角色），并在后续游玩中结合规则引擎持续推进体验。
 
 ## 本地运行
@@ -96,6 +98,23 @@ npm run test --workspace client
 ```bash
 npm run build
 ```
+
+## Cloudflare Pages
+
+项目已包含 `wrangler.jsonc`，构建产物目录为 `client/dist`。如果前端和 API 不同源部署，请在 Cloudflare Pages 环境变量中配置：
+
+```bash
+VITE_API_BASE_URL=https://your-api.example.com
+```
+
+然后执行：
+
+```bash
+npm run build
+npx wrangler pages deploy client/dist
+```
+
+注意：当前后端是 Express 服务，不能只靠 Pages 静态托管运行完整 API。可以把后端部署到支持 Node/Express 的服务，或后续迁移到 Cloudflare Workers/Containers，再用 `VITE_API_BASE_URL` 指向它。
 
 ## 当前实现边界（现状）
 
