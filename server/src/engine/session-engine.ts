@@ -26,8 +26,6 @@ import {
   type TagId,
   type TurnOrderEntry
 } from '@wax-museum/shared';
-import { randomUUID } from 'node:crypto';
-import { getItemLabel, getTargetLabel } from '../services/ai.js';
 
 const FREE_ACTIONS = new Set<ActionType>(['inspect', 'inventory', 'help']);
 const LOG_TAIL_SIZE = 8;
@@ -145,7 +143,7 @@ export function createNewSession(request: CreateSessionRequest, scenario?: Story
   }
 
   const session: GameSession = {
-    sessionId: randomUUID(),
+    sessionId: createSessionId(),
     phase: 'active',
     scenario: structuredClone(activeScenario),
     player: {
@@ -265,6 +263,41 @@ function buildNpcPoolFromRoles(
         }
       };
     });
+}
+
+function createSessionId() {
+  return globalThis.crypto?.randomUUID?.() ?? `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function getItemLabel(session: GameSession, itemId: ItemId) {
+  return session.scenario.glossary.itemLabels[itemId] ?? ITEM_LIBRARY[itemId].label;
+}
+
+function getTargetLabel(session: GameSession, targetId: string) {
+  switch (targetId) {
+    case 'locker':
+      return getFirstPoi(session, 'crew-quarters', '储物点');
+    case 'relay':
+      return session.scenario.glossary.powerNodeLabel;
+    case 'console':
+      return getFirstPoi(session, 'control-room', '主控终端');
+    case 'cabinet':
+      return session.scenario.glossary.cabinetLabel;
+    case 'survivor':
+      return session.scenario.glossary.survivorLabel;
+    case 'bulkhead':
+      return session.scenario.glossary.gateLabel;
+    case 'escape-pod':
+      return session.scenario.glossary.exitVehicleLabel;
+    case 'self':
+      return '自己';
+    default:
+      return '当前区域';
+  }
+}
+
+function getFirstPoi(session: GameSession, preferredLocationId: string, fallback: string) {
+  return session.world.locations[preferredLocationId]?.pointsOfInterest[0] ?? Object.values(session.world.locations)[0]?.pointsOfInterest[0] ?? fallback;
 }
 
 function getSceneObject(session: Pick<GameSession, 'world'>, objectId: string) {
