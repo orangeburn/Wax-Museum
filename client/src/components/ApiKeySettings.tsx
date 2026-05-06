@@ -48,16 +48,26 @@ export function ApiKeySettings() {
 
   return (
     <div className="api-key-dock">
-      <Button
-        type="button"
-        size="sm"
-        variant={hasKey ? 'primary' : 'secondary'}
-        className="api-key-trigger"
-        onClick={() => setOpen((current) => !current)}
-        aria-expanded={open}
-      >
-        {hasKey ? 'API Key 已启用' : '填写 API Key'}
-      </Button>
+      <div className="top-link-row">
+        <a
+          className="github-link"
+          href="https://github.com/orangeburn/Wax-Museum"
+          target="_blank"
+          rel="noreferrer"
+        >
+          GitHub
+        </a>
+        <Button
+          type="button"
+          size="sm"
+          variant={hasKey ? 'primary' : 'secondary'}
+          className="api-key-trigger"
+          onClick={() => setOpen((current) => !current)}
+          aria-expanded={open}
+        >
+          {hasKey ? 'API Key 已启用' : '填写 API Key'}
+        </Button>
+      </div>
 
       {open ? (
         <div className="api-key-popover" role="dialog" aria-label="LLM API 设置">
@@ -98,7 +108,7 @@ export function ApiKeySettings() {
                 variant="secondary"
               />
             </label>
-            <p className="select-hint">密钥只保存在当前浏览器，请求时临时发送给后端；服务端不会保存它。</p>
+            <p className="select-hint">密钥只保存在当前浏览器。浏览器会直接调用你填写的模型服务；失败时使用本地兜底内容。</p>
             <div className="api-key-actions">
               <Button type="submit" variant="primary" isDisabled={!draft.apiKey.trim()}>
                 保存

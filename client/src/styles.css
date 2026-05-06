@@ -81,9 +81,37 @@ body::before {
   max-width: min(22rem, calc(100vw - 1.5rem));
 }
 
+.top-link-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
 .api-key-trigger {
   box-shadow: 0 12px 34px rgba(0, 0, 0, 0.3);
   white-space: normal;
+}
+
+.github-link {
+  display: inline-grid;
+  min-height: 2rem;
+  place-items: center;
+  padding: 0 0.75rem;
+  border: 1px solid rgba(231, 225, 213, 0.16);
+  background: rgba(255, 255, 255, 0.04);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.25);
+  color: rgba(244, 239, 230, 0.9);
+  font-size: 0.875rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.github-link:hover,
+.github-link:focus-visible {
+  border-color: rgba(201, 177, 125, 0.48);
+  background: rgba(201, 177, 125, 0.1);
+  outline: none;
 }
 
 .api-key-popover {
@@ -723,6 +751,14 @@ p {
     right: 0.5rem;
     justify-items: stretch;
     max-width: none;
+  }
+
+  .top-link-row {
+    justify-content: stretch;
+  }
+
+  .top-link-row > * {
+    flex: 1 1 8rem;
   }
 
   .api-key-popover {
