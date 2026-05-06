@@ -89,10 +89,17 @@ async function fetchWithFallback(input: string, init?: RequestInit) {
 
 async function readJson<T>(input: string, init?: RequestInit): Promise<T> {
   const response = await fetchWithFallback(input, init);
+  const contentType = response.headers.get('content-type') ?? '';
 
   if (!response.ok) {
-    const error = (await response.json().catch(() => ({ message: '请求失败' }))) as { message?: string };
+    const error = contentType.includes('application/json')
+      ? ((await response.json().catch(() => ({ message: '请求失败' }))) as { message?: string })
+      : { message: '接口服务不可用，请确认后端 API 已部署并配置 VITE_API_BASE_URL。' };
     throw new ApiResponseError(error.message ?? '请求失败');
+  }
+
+  if (!contentType.includes('application/json')) {
+    throw new ApiResponseError('接口服务未连接：Cloudflare Pages 只部署了前端，请部署后端 API 并配置 VITE_API_BASE_URL。');
   }
 
   return response.json() as Promise<T>;
