@@ -8,9 +8,13 @@
     "test": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
+    "@heroui/react": "^3.0.3",
+    "@heroui/theme": "^2.4.26",
+    "@tailwindcss/vite": "^4.2.4",
     "@wax-museum/shared": "*",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "react-router-dom": "^7.4.0"
+    "react-router-dom": "^7.4.0",
+    "tailwindcss": "^4.2.4"
   }
 }

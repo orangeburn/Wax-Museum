@@ -1080,6 +1080,19 @@ export function applyParsedAction(
       resolution.stateChanges.unshift(`${working.scenario.countdown.shortLabel} -1`);
     }
 
+    if (filteredAction.consumesTurn) {
+      const pairOutcome = resolveNpcPairInteractions(working, randomSource);
+      if (pairOutcome.publicSnippets.length) {
+        presentation.publicText = `${presentation.publicText} ${pairOutcome.publicSnippets.join(' ')}`.trim();
+      }
+      if (pairOutcome.systemSnippets.length) {
+        presentation.systemText = `${presentation.systemText} / ${pairOutcome.systemSnippets.join(' / ')}`.trim();
+      }
+      resolution.dangerDelta += pairOutcome.dangerDelta;
+      resolution.damage += pairOutcome.damage;
+      resolution.stateChanges.push(...pairOutcome.stateChanges);
+    }
+
     const playerTurnEndsNow =
       filteredAction.consumesTurn &&
       (filteredAction.type === 'move' || (working.world.playerActionPoints ?? 0) <= 0);
@@ -1266,6 +1279,19 @@ export async function applyParsedActionWithNpcAi(
         resolution.stateChanges.unshift(`${working.scenario.countdown.shortLabel} -1`);
       }
 
+      if (filteredAction.consumesTurn) {
+        const pairOutcome = resolveNpcPairInteractions(working, randomSource);
+        if (pairOutcome.publicSnippets.length) {
+          presentation.publicText = `${presentation.publicText} ${pairOutcome.publicSnippets.join(' ')}`.trim();
+        }
+        if (pairOutcome.systemSnippets.length) {
+          presentation.systemText = `${presentation.systemText} / ${pairOutcome.systemSnippets.join(' / ')}`.trim();
+        }
+        resolution.dangerDelta += pairOutcome.dangerDelta;
+        resolution.damage += pairOutcome.damage;
+        resolution.stateChanges.push(...pairOutcome.stateChanges);
+      }
+
       const playerTurnEndsNow =
         filteredAction.consumesTurn &&
         (filteredAction.type === 'move' || (working.world.playerActionPoints ?? 0) <= 0);
@@ -1415,7 +1441,11 @@ export function listAvailableActions(session: GameSession): string[] {
 
   hints.push('查看背包');
   hints.push('请求提示');
-  return Array.from(new Set(hints)).slice(0, 9);
+  const uniqueHints = Array.from(new Set(hints));
+  if (uniqueHints.length <= 9 || uniqueHints.includes('请求提示') && uniqueHints.indexOf('请求提示') < 9) {
+    return uniqueHints.slice(0, 9);
+  }
+  return [...uniqueHints.slice(0, 8), '请求提示'];
 }
 function listSandboxMoveTargets(session: GameSession): LocationId[] {
   return (Object.keys(session.world.locations) as LocationId[]).filter((locationId) => locationId !== session.player.locationId);
@@ -2104,7 +2134,9 @@ function useItemAction(session: GameSession, action: FilteredAction) {
     }
 
     session.world.danger = clamp(session.world.danger - 1, 0, 9);
+    session.world.oxygen = clamp(session.world.oxygen + 2, 0, getMaxCountdown(session));
     stateChanges.push('危险值 -1');
+    stateChanges.push(`${session.scenario.countdown.recoverLabel} +2`);
 
     return successResult(
       `你用${getItemLabel(session, 'medkit')}替${getTargetLabel(session, 'survivor')}止住了伤势，对方终于缓过神来，把${getItemLabel(session, 'captain-keycard')}和${getItemLabel(session, 'oxygen-canister')}一起塞给你。`,

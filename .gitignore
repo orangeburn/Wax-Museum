@@ -3,6 +3,7 @@ dist/
 coverage/
 *.log
 .env
+.playwright-mcp/
 client/dist/
 server/dist/
 shared/dist/

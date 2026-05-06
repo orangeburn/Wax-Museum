@@ -996,6 +996,7 @@ function buildFallbackWriterDraft(prompt: string, storyGameMode: StoryGameMode, 
   const twist = inferTwistDirection(normalizedPrompt);
   const countdownPressure = inferCountdownPressure(normalizedPrompt, roundCount);
   const premise = `你们因“${normalizedPrompt}”被卷入同一场封闭危机，${conflict}。`;
+  const locations = buildFallbackLocations();
   const scenarioInput: Omit<StoryScenario, 'id'> = {
     title,
     premise,
@@ -1009,10 +1010,10 @@ function buildFallbackWriterDraft(prompt: string, storyGameMode: StoryGameMode, 
       recoverLabel: '步数'
     },
     gameplayMode: 'llm',
-    beats: [],
-    npcs: [],
+    beats: buildFallbackBeats(Object.keys(locations) as LocationId[], roundCount),
+    npcs: buildNpcsFromRoles(roles.slice(1), Object.keys(locations) as LocationId[]),
     glossary: normalizeGlossary(undefined),
-    locations: buildFallbackLocations()
+    locations
   };
 
   return {
@@ -1029,7 +1030,7 @@ function buildFallbackWriterDraft(prompt: string, storyGameMode: StoryGameMode, 
       endings: getModeEndings(storyGameMode),
       roles
     },
-    scenario: normalizeScenario(scenarioInput, undefined, storyGameMode, roundCount)
+    scenario: normalizeScenario(scenarioInput, { roles }, storyGameMode, roundCount)
   };
 }
 
@@ -1322,7 +1323,7 @@ function normalizeScenario(input: Omit<StoryScenario, 'id'>, bibleInput: Partial
     countdown: normalizeCountdown(input.countdown, fallbackScenario),
     gameplayMode: input.gameplayMode === 'llm' ? 'llm' : 'llm',
     beats: normalizeBeats(input.beats, locationIdMap, roundCount),
-    npcs: normalizeNpcs(input.npcs, normalizedLocations),
+    npcs: normalizeNpcs(input.npcs, normalizedLocations, bibleInput?.roles),
     glossary: normalizeGlossary(input.glossary),
     locations: normalizedLocations
   };
@@ -1330,7 +1331,8 @@ function normalizeScenario(input: Omit<StoryScenario, 'id'>, bibleInput: Partial
 
 function normalizeNpcs(
   input: unknown,
-  locations: Record<LocationId, LocationDefinition>
+  locations: Record<LocationId, LocationDefinition>,
+  roles?: WriterRole[]
 ): StoryNpc[] {
   const locationIds = Object.keys(locations) as LocationId[];
   const fallbackLocation = locationIds[0];
@@ -1345,6 +1347,11 @@ function normalizeNpcs(
     return normalized;
   }
 
+  const roleNpcs = buildNpcsFromRoles((roles ?? []).slice(1), locationIds);
+  if (roleNpcs.length >= 2) {
+    return roleNpcs;
+  }
+
   const generatedFallback: StoryNpc[] = locationIds.slice(0, 2).map((locationId, index) => ({
     id: `npc-${index + 1}`,
     name: index === 0 ? '现场目击者' : '临时协助者',
@@ -1357,6 +1364,44 @@ function normalizeNpcs(
   }));
 
   return generatedFallback;
+}
+
+function buildNpcsFromRoles(roles: WriterRole[], locationIds: LocationId[]): StoryNpc[] {
+  if (!locationIds.length) {
+    return [];
+  }
+
+  return roles.slice(0, 5).map((role, index) => {
+    const attitude = inferRoleNpcAttitude(role, index);
+    return {
+      id: `npc-${role.id || index + 1}`,
+      name: role.label,
+      publicIdentity: role.publicIdentity,
+      hiddenDrive: role.hiddenDrive,
+      attitude,
+      locationId: locationIds[(index + 1) % locationIds.length] ?? locationIds[0]!,
+      clue: role.relationshipHook || role.specialty,
+      status: normalizeNpcStatus('', attitude),
+      motiveAnchor: role.settingPack?.immediateNeed ?? role.hiddenDrive,
+      interactionTips: [
+        role.settingPack?.interactionGuide.trustGain ?? role.specialty,
+        role.settingPack?.interactionGuide.bargainingChip ?? role.relationshipHook
+      ],
+      privateState: {
+        coreGoal: role.hiddenDrive,
+        shortTermGoal: role.settingPack?.immediateNeed ?? '先确认局势对自己是否有利。',
+        strategy: role.settingPack?.actionTendencies?.[0] ?? role.specialty,
+        stress: 0,
+        memory: []
+      }
+    };
+  });
+}
+
+function inferRoleNpcAttitude(role: WriterRole, index: number): StoryNpc['attitude'] {
+  if (role.coreTag === '说客' || role.coreTag === '战地急救') return 'friendly';
+  if (role.coreTag === '钢铁意志' || /封控|阻止|压制|控制/.test(role.hiddenDrive)) return 'hostile';
+  return index % 3 === 0 ? 'neutral' : index % 3 === 1 ? 'friendly' : 'hostile';
 }
 
 function normalizeNpc(
@@ -1419,14 +1464,21 @@ function normalizeBeats(input: unknown, locationIdMap: Map<string, LocationId>, 
   if (beats.length >= Math.max(3, targetBeatCount - 1)) {
     return beats.slice(0, targetBeatCount + 1);
   }
-  const fallbackLocation = Array.from(new Set(locationIdMap.values()))[0] ?? 'area-1';
+  const fallbackBeats = buildFallbackBeats(Array.from(new Set(locationIdMap.values())), roundCount);
+
+  return fallbackBeats.slice(0, targetBeatCount);
+}
+
+function buildFallbackBeats(locationIds: LocationId[], roundCount: number): StoryBeat[] {
+  const targetBeatCount = inferBeatCountByRoundCount(roundCount);
+  const [firstLocation = 'area-1', secondLocation = firstLocation, thirdLocation = firstLocation, finalLocation = thirdLocation] = locationIds;
   const fallbackBeats: StoryBeat[] = [
     {
       id: 'beat-1',
       title: '确认第一现场',
       summary: '先从最直接的线索入手。',
       guidance: '查看当前区域最异常的痕迹。',
-      locationId: fallbackLocation,
+      locationId: firstLocation,
       actionType: 'inspect',
       targetLabel: '可疑痕迹',
       skill: 'mind',
@@ -1442,7 +1494,7 @@ function normalizeBeats(input: unknown, locationIdMap: Map<string, LocationId>, 
       title: '争取主动权',
       summary: '通过对话或行动改变局势。',
       guidance: '说服关键人物或执行一次关键动作。',
-      locationId: fallbackLocation,
+      locationId: secondLocation,
       actionType: 'persuade',
       targetLabel: '关键人物',
       skill: 'empathy',
@@ -1455,30 +1507,47 @@ function normalizeBeats(input: unknown, locationIdMap: Map<string, LocationId>, 
     },
     {
       id: 'beat-3',
+      title: '取得关键资源',
+      summary: '从现场物件里取回能改变终局的资源。',
+      guidance: '检查关键容器或装置，拿到下一步所需物品。',
+      locationId: thirdLocation,
+      actionType: 'inspect',
+      targetLabel: '关键容器',
+      skill: 'mind',
+      requiredItemId: null,
+      rewardItemId: 'captain-keycard',
+      countdownDelta: 1,
+      successText: '你找到了打开终局路线的关键资源。',
+      failText: '你暂时没能从混乱里找出能用的东西。',
+      suggestions: ['查看关键容器', '检查剩余资源']
+    },
+    {
+      id: 'beat-4',
       title: '执行终局动作',
       summary: '在压力下完成决定性一步。',
       guidance: '抓住最后窗口推进主目标。',
-      locationId: fallbackLocation,
+      locationId: finalLocation,
       actionType: 'use_item',
       targetLabel: '关键装置',
       skill: 'mind',
-      requiredItemId: null,
+      requiredItemId: 'captain-keycard',
       rewardItemId: null,
       countdownDelta: 1,
       successText: '你把故事推向了终局。',
       failText: '时机稍纵即逝。',
-      suggestions: ['使用关键装置', '检查剩余资源']
+      suggestions: ['使用关键装置', '启动最终装置']
     }
   ];
 
   while (fallbackBeats.length < targetBeatCount) {
     const index = fallbackBeats.length + 1;
+    const locationId = locationIds[(index - 1) % Math.max(1, locationIds.length)] ?? firstLocation;
     fallbackBeats.push({
       id: `beat-${index}`,
       title: `阶段推进 ${index}`,
       summary: '在压力下继续推进主线。',
       guidance: '继续处理最关键的阻碍。',
-      locationId: fallbackLocation,
+      locationId,
       actionType: index % 3 === 0 ? 'persuade' : index % 2 === 0 ? 'use_item' : 'inspect',
       targetLabel: index % 3 === 0 ? '关键人物' : '关键装置',
       skill: index % 3 === 0 ? 'empathy' : 'mind',

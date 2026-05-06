@@ -1,7 +1,17 @@
 import type { ActionResponse, ItemId, SessionSnapshot } from '@wax-museum/shared';
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from 'react';
+import { Button, Card, CardContent, CardHeader, Chip, TextArea } from '@heroui/react';
 import { Link, useParams } from 'react-router-dom';
 import { getSession, postAction } from '../lib/api';
+
+/** Estimate AP cost for a suggestion label based on keyword heuristics. */
+function estimateApCost(hint: string): number {
+  if (/查看|背包|提示/.test(hint)) return 0;
+  if (/前往|移动/.test(hint)) return 2;
+  if (/修理|强行/.test(hint)) return 3;
+  if (/使用|说服/.test(hint)) return 2;
+  return 1;
+}
 
 function getLocationLabel(snapshot: SessionSnapshot, locationId: string) {
   return snapshot.world.locations[locationId]?.label ?? locationId;
@@ -43,11 +53,8 @@ export function GamePage() {
   const resolutionSummary =
     actionFeedback?.narration.scene ??
     latestEntry?.publicText ??
-    (session?.phase === 'escaped' ? `最终撤离已经完成，${session?.scenario.title ?? '现场'} 终于退成了身后的黑影。` : '秩序彻底崩塌，这一局停在了代价和黑暗之间。');
-  const resolutionTone =
-    session?.phase === 'escaped'
-      ? '警报已经远去，剩下的是终于能慢慢呼吸的空气。'
-      : '这次没能离开，但整段航程和每一步代价都还留在记录里。';
+    (session?.phase === 'escaped' ? `撤离完成。` : '秩序彻底崩塌。');
+  const playerAp = session?.world.playerActionPoints ?? 0;
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -89,45 +96,67 @@ export function GamePage() {
     }
   }
 
+  async function handleEndRound() {
+    if (!sessionId || sending || !session || session.phase !== 'active') {
+      return;
+    }
+
+    setSending(true);
+    setError(null);
+    try {
+      const response = await postAction(sessionId, '结束回合');
+      setSession(response.sessionSnapshot);
+      setActionFeedback(response);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '结束回合失败');
+    } finally {
+      setSending(false);
+    }
+  }
+
   if (loading) {
-    return <main className="shell game-loading">正在同步故事现场…</main>;
+    return <main className="shell game-loading">同步故事现场…</main>;
   }
 
   if (!session) {
     return (
       <main className="shell game-loading">
-        <p className="error-copy">{error ?? '未找到该存档。'}</p>
-        <Link to="/" className="ghost-button inline-link">
-          返回起始页
-        </Link>
+        <div>
+          <p className="error-copy">{error ?? '未找到该存档。'}</p>
+          <div className="hero-actions" style={{ justifyContent: 'center' }}>
+            <Link to="/" className="muted-copy">返回</Link>
+          </div>
+        </div>
       </main>
     );
   }
 
   return (
     <main className="shell shell-game">
+      {/* ── Status Ribbon ── */}
       <header className="status-ribbon">
-        <div>
-          <p className="panel-kicker">当前故事</p>
+        <div className="ribbon-heading">
+          <p className="panel-kicker">主线目标</p>
           <h1>{session.objectives.macroObjective}</h1>
-          <p className="muted-copy">{session.scenario.premise}</p>
         </div>
         <div className="ribbon-stats">
-          <span>{session.objectives.countdownLabel}</span>
-          <span>危险 {session.world.danger}</span>
-          <span>HP {session.player.hp}</span>
-          <span>San {session.player.san}</span>
-          <span className={`phase-chip phase-${session.phase}`}>{session.phase}</span>
+          <Chip size="sm" variant="soft">{`回合 ${session.world.currentRound ?? 1}/${session.world.maxRounds ?? 8}`}</Chip>
+          <Chip size="sm" variant="soft">{`AP ${playerAp}`}</Chip>
+          <Chip size="sm" variant="soft">{session.objectives.countdownLabel}</Chip>
+          <Chip className={session.world.danger > 2 ? 'danger-chip' : ''} size="sm" variant="soft">{`危险 ${session.world.danger}`}</Chip>
+          <Chip size="sm" variant="soft">{`HP ${session.player.hp}`}</Chip>
+          <Chip size="sm" variant="soft">{`San ${session.player.san}`}</Chip>
+          <Chip className={`phase-chip phase-${session.phase}`} size="sm" variant="soft">{session.phase}</Chip>
         </div>
       </header>
 
+      {/* ── Resolution Banner ── */}
       {isResolved ? (
         <section className={`resolution-banner resolution-${session.phase}`}>
           <div className="resolution-copy">
             <p className="panel-kicker">{session.phase === 'escaped' ? '任务完成' : '任务结束'}</p>
             <h2>{resolutionTitle}</h2>
-            <p>{resolutionSummary}</p>
-            <p className="muted-copy">{resolutionTone}</p>
+            <p className="muted-copy">{resolutionSummary}</p>
           </div>
           <div className="resolution-stats" aria-label="结算摘要">
             <div>
@@ -139,88 +168,99 @@ export function GamePage() {
               <strong>{session.world.danger}</strong>
             </div>
             <div>
-              <span>总回合</span>
+              <span>总行动</span>
               <strong>{session.world.turn}</strong>
             </div>
           </div>
         </section>
       ) : null}
 
+      {/* ── Main Grid ── */}
       <section className="game-grid">
+        {/* ── Left: Player Info ── */}
         <aside className="sidebar player-rail">
-          <div className="sidebar-block">
-            <p className="panel-kicker">故事设定</p>
-            <h2>{session.scenario.title}</h2>
-            <p>{session.scenario.openingLine}</p>
-          </div>
-          <div className="sidebar-block">
-            <p className="panel-kicker">角色</p>
-            <h2>{session.player.archetypeLabel}</h2>
-            <p>{session.player.customBackground || '没有额外背景备注。'}</p>
-          </div>
+          <Card className="section-surface">
+            <CardHeader className="panel-header">
+              <p className="panel-kicker">角色</p>
+              <h2>{session.player.archetypeLabel}</h2>
+            </CardHeader>
+            <CardContent className="writer-stage">
+              <div className="stat-stack">
+                <div><span>体魄</span><strong>{session.player.stats.physique}</strong></div>
+                <div><span>心智</span><strong>{session.player.stats.mind}</strong></div>
+                <div><span>感性</span><strong>{session.player.stats.empathy}</strong></div>
+              </div>
+              <div className="sidebar-block">
+                <p className="panel-kicker">标签</p>
+                <div className="tag-list">
+                  {session.player.tags.map((tag) => (
+                    <Chip key={tag} size="sm" variant="soft">{tag}</Chip>
+                  ))}
+                </div>
+              </div>
+              <div className="sidebar-block">
+                <p className="panel-kicker">物品</p>
+                <ul className="item-list">
+                  {session.player.inventory.length ? session.player.inventory.map((item) => <li key={item}>{itemLabels[item] ?? item}</li>) : <li className="muted-copy">无</li>}
+                </ul>
+              </div>
+            </CardContent>
+          </Card>
           {secretAgenda ? (
-            <div className="sidebar-block">
-              <p className="panel-kicker">秘密目标</p>
-              <h2>{secretAgenda.title}</h2>
-              <p>{secretAgenda.description}</p>
-              <p><strong>完成提示：</strong>{secretAgenda.successHint}</p>
-              <p className="muted-copy">{session.objectives.secretAgendaStatus ?? `秘密目标进行中 ${secretAgenda.progress}/${secretAgenda.requiredProgress}`}</p>
-            </div>
+            <Card className="section-surface">
+              <CardHeader className="panel-header">
+                <p className="panel-kicker">秘密目标</p>
+                <h2>{secretAgenda.title}</h2>
+              </CardHeader>
+              <CardContent className="writer-stage">
+                <p>{secretAgenda.description}</p>
+                <Chip className={secretAgenda.status === 'completed' ? 'success-chip' : ''} size="sm" variant="soft">
+                  {session.objectives.secretAgendaStatus ?? `${secretAgenda.progress}/${secretAgenda.requiredProgress}`}
+                </Chip>
+              </CardContent>
+            </Card>
           ) : null}
-          <div className="stat-stack">
-            <div>
-              <span>体魄</span>
-              <strong>{session.player.stats.physique}</strong>
-            </div>
-            <div>
-              <span>心智</span>
-              <strong>{session.player.stats.mind}</strong>
-            </div>
-            <div>
-              <span>感性</span>
-              <strong>{session.player.stats.empathy}</strong>
-            </div>
-          </div>
-          <div className="sidebar-block">
-            <p className="panel-kicker">标签</p>
-            <div className="tag-list">
-              {session.player.tags.map((tag) => (
-                <span key={tag}>{tag}</span>
-              ))}
-            </div>
-          </div>
-          <div className="sidebar-block">
-            <p className="panel-kicker">携带物品</p>
-            <ul className="item-list">
-              {session.player.inventory.length ? session.player.inventory.map((item) => <li key={item}>{itemLabels[item] ?? item}</li>) : <li>无</li>}
-            </ul>
-          </div>
-          <div className="sidebar-block notes-block">
-            <p className="panel-kicker">规则备注</p>
-            <ul className="item-list">
-              {session.player.notes.length ? session.player.notes.map((note) => <li key={note}>{note}</li>) : <li>无额外备注</li>}
-            </ul>
-          </div>
+          {session.scenario.npcs?.length ? (
+            <Card className="section-surface">
+              <CardHeader className="panel-header">
+                <p className="panel-kicker">NPC</p>
+              </CardHeader>
+              <CardContent>
+                <ul className="item-list">
+                  {session.scenario.npcs.map((npc) => (
+                    <li key={npc.id}>
+                      <strong>{npc.name}</strong>（{npc.attitude}）
+                      <div>@{getLocationLabel(session, npc.locationId)}</div>
+                    </li>
+                  ))}
+                </ul>
+              </CardContent>
+            </Card>
+          ) : null}
         </aside>
 
+        {/* ── Center: Story Flow ── */}
         <section className="log-panel">
-          <div className="log-header">
-            <div>
-              <p className="panel-kicker">动态目标</p>
-              <h2>{session.objectives.dynamicGuide}</h2>
-            </div>
-            <span className="location-pill">当前位置：{getLocationLabel(session, session.player.locationId)}</span>
-          </div>
-
-          <div className="narration-preview">
-            <p className="panel-kicker">最新广播</p>
-            <p>{actionFeedback?.narration.scene ?? latestEntry?.publicText ?? '开局后你的第一条行动会出现在这里。'}</p>
-            <div className="system-tags">
-              {(actionFeedback?.narration.systems ?? []).map((entry) => (
-                <span key={entry}>{entry}</span>
-              ))}
-            </div>
-          </div>
+          <Card className="section-surface">
+            <CardHeader className="log-header">
+              <div>
+                <p className="panel-kicker">行动指引</p>
+                <h2>{session.objectives.dynamicGuide}</h2>
+              </div>
+              <Chip className="location-pill" size="sm" variant="soft">{getLocationLabel(session, session.player.locationId)}</Chip>
+            </CardHeader>
+            <CardContent className="narration-preview">
+              <p className="panel-kicker">最新事件</p>
+              <p>{actionFeedback?.narration.scene ?? latestEntry?.publicText ?? '你的第一条行动会出现在这里。'}</p>
+              {(actionFeedback?.narration.systems ?? []).length > 0 ? (
+                <div className="system-tags">
+                  {(actionFeedback?.narration.systems ?? []).map((entry) => (
+                    <Chip key={entry} size="sm" variant="soft">{entry}</Chip>
+                  ))}
+                </div>
+              ) : null}
+            </CardContent>
+          </Card>
 
           <ol className="log-stream">
             {session.logTail.map((entry) => (
@@ -236,52 +276,76 @@ export function GamePage() {
           </ol>
 
           <form className="command-form" onSubmit={handleSubmit}>
-            <label>
-              <span>{session.phase === 'active' ? '自然语言行动' : '本局已结束'}</span>
-              <textarea
-                rows={3}
+            <span className="field-label">{session.phase === 'active' ? '行动输入' : '本局已结束'}</span>
+            <div className="command-row">
+              <TextArea
+                aria-label="自然语言行动"
+                rows={2}
                 value={intent}
-                onChange={(event) => setIntent(event.target.value)}
-                placeholder={session.phase === 'active' ? '例如：我查看工具柜；我前往动力区；我启动撤离装置' : '你已经抵达结局，可以返回首页再开一局。'}
+                onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setIntent(event.target.value)}
+                placeholder={session.phase === 'active' ? '描述你想做的事…' : '返回首页再开一局。'}
                 disabled={session.phase !== 'active'}
+                variant="secondary"
               />
-            </label>
-            <div className="hero-actions">
-              <button type="submit" className="primary-button" disabled={sending || session.phase !== 'active'}>
-                {sending ? '执行中…' : session.phase === 'active' ? '执行行动' : session.phase === 'escaped' ? '已成功逃离' : '本局已结束'}
-              </button>
-              <Link to="/" className="ghost-button inline-link">
-                {session.phase === 'active' ? '返回首页' : '再开一局'}
-              </Link>
+              <Button type="submit" variant="primary" isDisabled={sending || session.phase !== 'active'}>
+                {sending ? '…' : '执行行动'}
+              </Button>
             </div>
+            {error ? <p className="error-copy">{error}</p> : null}
+            {!isResolved ? (
+              <Link to="/" className="muted-copy" style={{ fontSize: '0.75rem' }}>返回首页</Link>
+            ) : (
+              <Link to="/" className="muted-copy">再开一局</Link>
+            )}
           </form>
-          {error ? <p className="error-copy">{error}</p> : null}
         </section>
 
+        {/* ── Right: Actions & Location ── */}
         <aside className="sidebar route-rail">
-          <div className="sidebar-block">
-            <p className="panel-kicker">当前舱室</p>
-            <h2>{getLocationLabel(session, session.player.locationId)}</h2>
-            <p>{getLocationDescription(session, session.player.locationId)}</p>
-          </div>
-          <div className="sidebar-block">
-            <p className="panel-kicker">推荐动作</p>
-            <div className="suggestion-list">
-              {session.objectives.availableActionsHint.map((hint) => (
-                <button key={hint} type="button" className="suggestion-chip" onClick={() => submitSuggestedCommand(hint)} disabled={sending || session.phase !== 'active'}>
-                  {hint}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="sidebar-block">
-            <p className="panel-kicker">已到过</p>
-            <ul className="item-list">
-              {session.world.visitedLocations.map((locationId) => (
-                <li key={locationId}>{getLocationLabel(session, locationId)}</li>
-              ))}
-            </ul>
-          </div>
+          <Card className="section-surface">
+            <CardHeader className="panel-header">
+              <p className="panel-kicker">当前位置</p>
+              <h2>{getLocationLabel(session, session.player.locationId)}</h2>
+            </CardHeader>
+            <CardContent>
+              <p>{getLocationDescription(session, session.player.locationId)}</p>
+            </CardContent>
+          </Card>
+          <Card className="section-surface">
+            <CardHeader className="panel-header">
+              <p className="panel-kicker">可用行动</p>
+            </CardHeader>
+            <CardContent className="writer-stage">
+              <div className="suggestion-list">
+                {session.objectives.availableActionsHint.map((hint) => {
+                  const cost = estimateApCost(hint);
+                  return (
+                    <Button key={hint} type="button" className="save-item" variant="secondary" onClick={() => submitSuggestedCommand(hint)} isDisabled={sending || session.phase !== 'active'}>
+                      <span>{hint}</span>
+                      <span className="ap-cost">{cost > 0 ? `${cost} AP` : '免费'}</span>
+                    </Button>
+                  );
+                })}
+              </div>
+              {session.phase === 'active' && playerAp > 0 ? (
+                <Button type="button" variant="outline" onClick={handleEndRound} isDisabled={sending}>
+                  结束当前回合
+                </Button>
+              ) : null}
+            </CardContent>
+          </Card>
+          <Card className="section-surface">
+            <CardHeader className="panel-header">
+              <p className="panel-kicker">已探索</p>
+            </CardHeader>
+            <CardContent>
+              <ul className="item-list">
+                {session.world.visitedLocations.map((locationId) => (
+                  <li key={locationId}>{getLocationLabel(session, locationId)}</li>
+                ))}
+              </ul>
+            </CardContent>
+          </Card>
         </aside>
       </section>
     </main>

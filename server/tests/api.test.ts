@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import request from 'supertest';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../src/app.js';
 
 let saveDir: string;
@@ -86,6 +86,92 @@ describe('session API', () => {
     } finally {
       process.env.LLM_API_KEY = originalApiKey;
       process.env.LLM_MODEL = originalModel;
+    }
+  });
+
+  it('expands a short prompt into a richer story brief before calling the LLM', async () => {
+    const { app } = createApp({ saveDir, randomSource: () => 0.99 });
+    const originalApiKey = process.env.LLM_API_KEY;
+    const originalModel = process.env.LLM_MODEL;
+    const originalFetch = global.fetch;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as {
+        messages?: Array<{ role?: string; content?: string }>;
+      };
+      const userPayload = body.messages?.find((message) => message.role === 'user')?.content ?? '';
+      expect(userPayload).toContain('原始提示词：游轮');
+      expect(userPayload).toContain('反转方向：');
+      expect(userPayload).toContain('倒计时压力：');
+      expect(userPayload).toContain('写法要求：避免只有设定没有事件');
+
+      return new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              title: '游轮疑云',
+              premise: '一艘游轮在返航前夜发生离奇失踪案。',
+              twist: '最值得信任的人提前接触过失踪者留下的遗物。',
+              secret: '失踪案与一场被压下的旧事故有关。',
+              openingHook: '返航广播响起前，船上突然有人失踪。',
+              suggestedBackground: '你带着旧事故留下的愧疚登上这艘船。',
+              suggestedTags: ['冷静', '说客']
+            })
+          }
+        }]
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+
+    process.env.LLM_API_KEY = 'test-key';
+    process.env.LLM_MODEL = 'test-model';
+    global.fetch = fetchMock as typeof fetch;
+
+    try {
+      const generated = await request(app).post('/api/story-outline').send({
+        templateId: 'submarine-escape',
+        archetypeId: 'engineer',
+        prompt: '游轮',
+        playerCount: 4,
+        roundCount: 8
+      });
+
+      expect(generated.status).toBe(200);
+      expect(generated.body.title).toBe('游轮疑云');
+      expect(fetchMock).toHaveBeenCalled();
+    } finally {
+      process.env.LLM_API_KEY = originalApiKey;
+      process.env.LLM_MODEL = originalModel;
+      global.fetch = originalFetch;
+    }
+  });
+
+  it('returns a dramatic fallback writer draft even when the LLM request fails', async () => {
+    const { app } = createApp({ saveDir, randomSource: () => 0.99 });
+    const originalApiKey = process.env.LLM_API_KEY;
+    const originalModel = process.env.LLM_MODEL;
+    const originalFetch = global.fetch;
+
+    process.env.LLM_API_KEY = 'test-key';
+    process.env.LLM_MODEL = 'test-model';
+    global.fetch = vi.fn(async () => {
+      throw new Error('fetch failed');
+    }) as typeof fetch;
+
+    try {
+      const generated = await request(app).post('/api/writer/draft').send({
+        prompt: '游轮',
+        playerCount: 4,
+        roundCount: 8
+      });
+
+      expect(generated.status).toBe(200);
+      expect(generated.body.bible.title).toContain('游轮');
+      expect(generated.body.bible.currentCrisis).toContain('窗口');
+      expect(generated.body.bible.outline).toContain('反转暴露真正的动机与代价');
+      expect(generated.body.scenario.openingLine).toContain('交通工具或环境正在失控');
+    } finally {
+      process.env.LLM_API_KEY = originalApiKey;
+      process.env.LLM_MODEL = originalModel;
+      global.fetch = originalFetch;
     }
   });
 

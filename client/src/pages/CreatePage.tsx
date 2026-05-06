@@ -1,236 +1,124 @@
-import { CUSTOM_TAG_WHITELIST, type WriterDraftResponse, type WriterRole } from '@wax-museum/shared';
-import { FormEvent, useMemo, useState } from 'react';
+import { ChangeEvent, FormEvent, useState } from 'react';
+import { Button, Card, CardContent, CardHeader, TextArea } from '@heroui/react';
 import { useNavigate } from 'react-router-dom';
-import { ApiResponseError, createSession, generateWriterDraft } from '../lib/api';
+import type { StoryGameMode } from '@wax-museum/shared';
+
+const MODE_OPTIONS: Array<{ value: StoryGameMode; label: string; hint: string }> = [
+  { value: 'survival', label: '生存', hint: '在限定回合内尽可能活下来，活着撑到终点的玩家都算胜利。' },
+  { value: 'puzzle', label: '解谜', hint: '玩家合作破局，在限定回合内找出答案并逃出生天。' },
+  { value: 'versus', label: '对抗', hint: '不设回合上限，彼此博弈，最后留下来的玩家获胜。' }
+];
 
 export function CreatePage() {
   const navigate = useNavigate();
   const [backgroundPrompt, setBackgroundPrompt] = useState('');
-  const [customBackground, setCustomBackground] = useState('');
-  const [customTag, setCustomTag] = useState('');
-  const [draft, setDraft] = useState<WriterDraftResponse | null>(null);
-  const [selectedRoleId, setSelectedRoleId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [generating, setGenerating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [storyGameMode, setStoryGameMode] = useState<StoryGameMode>('survival');
+  const [playerCount, setPlayerCount] = useState(1);
+  const [roundCount, setRoundCount] = useState(8);
 
-  const selectedRole = useMemo(
-    () => draft?.bible.roles.find((entry) => entry.id === selectedRoleId) ?? draft?.bible.roles[0] ?? null,
-    [draft, selectedRoleId]
-  );
-
-  async function handleGenerateDraft() {
-    setGenerating(true);
-    setError(null);
-
-    try {
-      const nextDraft = await generateWriterDraft({
-        prompt: backgroundPrompt
-      });
-      const firstRole = nextDraft.bible.roles[0] ?? null;
-      setDraft(nextDraft);
-      setSelectedRoleId(firstRole?.id ?? null);
-      setCustomBackground(firstRole?.suggestedBackground ?? '');
-      setCustomTag(firstRole?.suggestedTag ?? '');
-    } catch (reason) {
-      setDraft(null);
-      setSelectedRoleId(null);
-      setError(reason instanceof ApiResponseError ? reason.message : null);
-    } finally {
-      setGenerating(false);
-    }
-  }
-
-  function applyRole(role: WriterRole) {
-    setSelectedRoleId(role.id);
-    setCustomBackground(role.suggestedBackground);
-    setCustomTag(role.suggestedTag);
-  }
-
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!draft || !selectedRole) {
+    const prompt = backgroundPrompt.trim();
+    if (!prompt) {
       return;
     }
-
-    setLoading(true);
-    setError(null);
-
-    try {
-      const snapshot = await createSession({
-        templateId: 'generated-story',
-        archetypeId: selectedRole.archetypeId,
-        storyPrompt: backgroundPrompt,
-        selectedRole: {
-          id: selectedRole.id,
-          archetypeId: selectedRole.archetypeId,
-          label: selectedRole.label,
-          publicIdentity: selectedRole.publicIdentity,
-          hiddenDrive: selectedRole.hiddenDrive,
-          relationshipHook: selectedRole.relationshipHook,
-          specialty: selectedRole.specialty,
-          suggestedTag: selectedRole.suggestedTag,
-          suggestedBackground: selectedRole.suggestedBackground,
-          stats: selectedRole.stats,
-          startingItems: selectedRole.startingItems,
-          coreTag: selectedRole.coreTag,
-          secretAgenda: selectedRole.secretAgenda
-        },
-        customBackground,
-        customTag
-      });
-      navigate(`/session/${snapshot.sessionId}`);
-    } catch (reason) {
-      setError(reason instanceof ApiResponseError ? reason.message : null);
-    } finally {
-      setLoading(false);
-    }
+    navigate('/create/draft', { state: { prompt, storyGameMode, playerCount, roundCount: storyGameMode === 'versus' ? undefined : roundCount } });
   }
 
   return (
     <main className="shell shell-create">
       <section className="create-hero">
-        <p className="eyebrow">编剧 Agent</p>
-        <h1>先给一句设定，让系统替你写出这局戏。</h1>
-        <p className="lede">输入像“风雪山庄，4人，逃生 / 破案”这样的说明。系统会先生成故事背景、剧情骨架和可选角色，再让你选一个身份进入现场。</p>
+        <p className="eyebrow">新故事</p>
+        <h1>设定你的故事。</h1>
+        <p className="lede">描述一个场景，选择玩法模式、参与人数和回合数。系统会生成完整的剧本、角色和相应玩法。</p>
       </section>
 
       <form className="create-layout" onSubmit={handleSubmit}>
-        <section className="writer-stage">
-          <div className="writer-prompt-panel">
-            <p className="panel-kicker">创作输入</p>
-            <label>
-              <span>故事 Prompt</span>
-              <textarea
-                rows={3}
+        <Card className="writer-stage section-surface">
+          <CardContent className="writer-prompt-panel">
+            <div className="field-stack">
+              <span className="field-label">故事 Prompt</span>
+              <TextArea
+                aria-label="故事 Prompt"
+                rows={4}
                 value={backgroundPrompt}
-                onChange={(event) => setBackgroundPrompt(event.target.value)}
+                onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setBackgroundPrompt(event.target.value)}
                 placeholder="例如：风雪山庄，4人，逃生/破案，关系复杂，最后要有一次反转。"
+                variant="secondary"
               />
-            </label>
-            <div className="hero-actions compact-actions">
-              <button type="button" className="primary-button" onClick={handleGenerateDraft} disabled={generating}>
-                {generating ? '编剧生成中…' : '生成剧本草案'}
-              </button>
             </div>
-            {generating ? <p className="muted-copy">正在请求模型生成故事草案，这一步通常需要几秒钟。</p> : null}
-            {error ? <p className="error-copy inline-error">{error}</p> : null}
-          </div>
-
-          {draft ? (
-            <>
-              <section className="story-outline-card story-bible-card">
-                <p className="panel-kicker">故事圣经</p>
-                <h2>{draft.bible.title}</h2>
-                <p className="muted-copy">{draft.bible.genre} / {draft.bible.playerCountLabel}</p>
-                <p><strong>故事背景：</strong>{draft.bible.background}</p>
-                <p><strong>当前危机：</strong>{draft.bible.currentCrisis}</p>
-                <p><strong>核心秘密：</strong>{draft.bible.coreSecret}</p>
-                <div className="story-list-block">
-                  <strong>剧情大纲</strong>
-                  <ol className="story-list">
-                    {draft.bible.outline.map((entry, index) => (
-                      <li key={`outline-${index}`}>{String(entry)}</li>
-                    ))}
-                  </ol>
-                </div>
-                <div className="story-list-block">
-                  <strong>结局方向</strong>
-                  <ul className="story-list">
-                    {draft.bible.endings.map((entry, index) => (
-                      <li key={`ending-${index}`}>{String(entry)}</li>
-                    ))}
-                  </ul>
-                </div>
-              </section>
-
-              <section className="role-grid" aria-label="编剧生成角色">
-                {draft.bible.roles.map((role) => {
-                  const active = role.id === selectedRole?.id;
+            <div className="field-stack">
+              <span className="field-label">游戏模式</span>
+              <div className="mode-select-grid" role="radiogroup" aria-label="游戏模式">
+                {MODE_OPTIONS.map((option) => {
+                  const active = option.value === storyGameMode;
                   return (
                     <button
+                      key={option.value}
                       type="button"
-                      key={role.id}
-                      className={`role-card ${active ? 'is-active' : ''}`}
-                      onClick={() => applyRole(role)}
+                      className={`mode-option ${active ? 'mode-option-active' : ''}`}
+                      onClick={() => setStoryGameMode(option.value)}
+                      aria-pressed={active}
                     >
-                      <p className="panel-kicker">{role.suggestedTag}</p>
-                      <h2>{role.label}</h2>
-                      <p>{role.publicIdentity}</p>
-                      <p><strong>隐藏动机：</strong>{role.hiddenDrive}</p>
-                      <p><strong>关系钩子：</strong>{role.relationshipHook}</p>
-                      <span className="prompt-text">{role.specialty}</span>
+                      <strong>{option.label}</strong>
+                      <span>{option.hint}</span>
                     </button>
                   );
                 })}
-              </section>
-            </>
-          ) : (
-            <section className="story-outline-card story-bible-card is-empty">
-              <p className="panel-kicker">等待剧本</p>
-              <h2>先生成一份故事圣经</h2>
-              <p>生成后这里会出现背景、危机、核心秘密、剧情大纲，以及 4 个可选角色卡。</p>
-            </section>
-          )}
-        </section>
+              </div>
+            </div>
+            <div className="select-row">
+              <label className="field-stack">
+                <span className="field-label">角色数量</span>
+                <select className="field-select" value={playerCount} onChange={(event) => setPlayerCount(Number(event.target.value))}>
+                  <option value={1}>1 人</option>
+                  <option value={2}>2 人</option>
+                  <option value={3}>3 人</option>
+                  <option value={4}>4 人</option>
+                  <option value={5}>5 人</option>
+                  <option value={6}>6 人</option>
+                </select>
+              </label>
+              <label className="field-stack">
+                <span className="field-label">回合数</span>
+                <select
+                  className="field-select"
+                  value={roundCount}
+                  onChange={(event) => setRoundCount(Number(event.target.value))}
+                  disabled={storyGameMode === 'versus'}
+                >
+                  <option value={6}>6 回合 · 短局</option>
+                  <option value={8}>8 回合 · 标准</option>
+                  <option value={10}>10 回合 · 长局</option>
+                  <option value={12}>12 回合 · 复杂</option>
+                  <option value={16}>16 回合 · 超长局</option>
+                </select>
+              </label>
+            </div>
+            <p className="select-hint">
+              {storyGameMode === 'versus' ? '对抗模式不限制回合数，重点是角色博弈、资源消耗和淘汰压力。' : '回合越多，剧本越复杂，故事节点越丰富。'}
+            </p>
+          </CardContent>
+        </Card>
 
         <aside className="briefing-panel">
-          <p className="panel-kicker">开局简报</p>
-          <h2>{selectedRole?.label ?? '等待角色'}</h2>
-          <p>{selectedRole?.publicIdentity ?? '先生成剧本草案，再从角色卡里选一个身份进入故事。'}</p>
-          {draft ? (
-            <div className="story-outline-card">
-              <p className="panel-kicker">当前场景</p>
-              <h3>{draft.scenario.title}</h3>
-              <p><strong>前提：</strong>{draft.scenario.premise}</p>
-              <p><strong>开场：</strong>{draft.scenario.openingLine}</p>
-            </div>
-          ) : null}
-          {selectedRole ? (
-            <div className="story-outline-card">
-              <p className="panel-kicker">角色摘要</p>
-              <p><strong>隐藏动机：</strong>{selectedRole.hiddenDrive}</p>
-              <p><strong>关系钩子：</strong>{selectedRole.relationshipHook}</p>
-              <p><strong>角色专长：</strong>{selectedRole.specialty}</p>
-            </div>
-          ) : null}
-          {selectedRole ? (
-            <div className="story-outline-card">
-              <p className="panel-kicker">秘密目标</p>
-              <h3>{selectedRole.secretAgenda.title}</h3>
-              <p>{selectedRole.secretAgenda.description}</p>
-              <p><strong>完成提示：</strong>{selectedRole.secretAgenda.successHint}</p>
-              <p className="muted-copy">预计需要推进 {selectedRole.secretAgenda.requiredProgress} 次相关行动。</p>
-            </div>
-          ) : null}
-          <label>
-            <span>角色背景</span>
-            <textarea
-              rows={5}
-              value={customBackground}
-              onChange={(event) => setCustomBackground(event.target.value)}
-              placeholder="生成角色后，这里会自动带入一版角色背景，你也可以手动改写。"
-            />
-          </label>
-          <label>
-            <span>自定义 Tag</span>
-            <input value={customTag} onChange={(event) => setCustomTag(event.target.value)} list="tag-whitelist" />
-            <datalist id="tag-whitelist">
-              {CUSTOM_TAG_WHITELIST.map((tag) => (
-                <option key={tag} value={tag} />
-              ))}
-            </datalist>
-          </label>
-          {selectedRole ? <p className="muted-copy">编剧建议 Tag：{selectedRole.suggestedTag}</p> : null}
-          <p className="muted-copy">规则白名单：{CUSTOM_TAG_WHITELIST.join('、')}</p>
-          <div className="hero-actions">
-            <button type="button" className="ghost-button" onClick={() => navigate('/')}>
-              返回起始页
-            </button>
-            <button type="submit" className="primary-button" disabled={loading || !draft || !selectedRole}>
-              {loading ? '正在写入故事并开局…' : '进入故事'}
-            </button>
-          </div>
+          <Card className="section-surface">
+            <CardHeader className="panel-header">
+              <p className="panel-kicker">下一步</p>
+              <h2>生成剧本与角色</h2>
+            </CardHeader>
+            <CardContent className="writer-stage">
+              <p className="muted-copy">提交后系统会分阶段生成故事大纲、角色卡，你选角后即可进入游戏。</p>
+              <div className="hero-actions">
+                <Button type="submit" variant="primary" isDisabled={!backgroundPrompt.trim()}>
+              生成剧本
+                </Button>
+                <Button type="button" variant="outline" onClick={() => navigate('/')}>
+              返回
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
         </aside>
       </form>
     </main>

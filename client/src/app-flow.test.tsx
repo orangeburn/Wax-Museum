@@ -231,6 +231,21 @@ describe('app flow', () => {
         return new Response(JSON.stringify(snapshot), { status: 201, headers: { 'Content-Type': 'application/json' } });
       }
 
+      if (url === '/api/story-outline' && init?.method === 'POST') {
+        return new Response(
+          JSON.stringify({
+            title: '风雪山庄疑局',
+            premise: '暴雪把所有人困在山庄里，活着离开和查清真相同样重要。',
+            twist: '最可信的人在隐藏关键证词。',
+            secret: '真相和多年前的旧案直接相关。',
+            openingHook: '灯光闪了第三次以后，你终于确定今晚不会有人来救场。',
+            suggestedBackground: '你曾参与过一次深潜事故调查，这次回来是为了确认被删改的记录和山庄旧案是否有关。',
+            suggestedTags: ['冷静', '说客']
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
       if (url === '/api/writer/draft' && init?.method === 'POST') {
         return new Response(
           JSON.stringify({
@@ -458,16 +473,16 @@ describe('app flow', () => {
     );
 
     await screen.findByText('继续旧局');
-    await user.click(screen.getByRole('button', { name: '创建新局' }));
+    await user.click(screen.getByRole('button', { name: '开始新局' }));
 
-    await screen.findByText('先给一句设定，让系统替你写出这局戏。');
+    await screen.findByText('设定你的故事。');
     await user.type(screen.getByLabelText('故事 Prompt'), '风雪山庄，4人，逃生/破案');
-    await user.click(screen.getByRole('button', { name: '生成剧本草案' }));
+    await user.click(screen.getByRole('button', { name: '生成剧本' }));
+    await screen.findByText('构建故事与角色。');
     await screen.findByRole('button', { name: /修缮顾问/ });
-    expect(screen.getByText('确认旧案记录被谁删改')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '进入故事' }));
 
-    await screen.findByText('当前位置：船员舱');
+    expect((await screen.findAllByText('船员舱')).length).toBeGreaterThan(0);
     expect(screen.getByText('确认旧案记录被谁删改')).toBeInTheDocument();
     expect(screen.getByText('秘密目标进行中 0/2')).toBeInTheDocument();
     await user.type(screen.getByLabelText('自然语言行动'), '查看储物柜');
@@ -478,7 +493,7 @@ describe('app flow', () => {
     await user.clear(screen.getByLabelText('自然语言行动'));
     await user.type(screen.getByLabelText('自然语言行动'), '前往机轮舱');
     await user.click(screen.getByRole('button', { name: '执行行动' }));
-    await screen.findByText('当前位置：机轮舱');
+    expect((await screen.findAllByText('机轮舱')).length).toBeGreaterThan(0);
 
     await user.clear(screen.getByLabelText('自然语言行动'));
     await user.type(screen.getByLabelText('自然语言行动'), '修理主继电器');
@@ -493,7 +508,7 @@ describe('app flow', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText('当前位置：机轮舱')).toBeInTheDocument();
+      expect(screen.getAllByText('机轮舱').length).toBeGreaterThan(0);
       expect(screen.getByText('去医务舱，从急救柜里拿到舰长钥匙卡。')).toBeInTheDocument();
     });
   });
@@ -541,9 +556,9 @@ describe('app flow', () => {
     );
 
     await screen.findByText('你活着离开了 失事潜艇。');
-    expect(screen.getByText('警报已经远去，剩下的是终于能慢慢呼吸的空气。')).toBeInTheDocument();
+    expect(screen.getAllByText('逃生艇像脱钩的箭一样冲出了干坞位。').length).toBeGreaterThan(0);
     expect(screen.getByRole('link', { name: '再开一局' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '已成功逃离' })).toBeDisabled();
+    expect(screen.getByText('escaped')).toBeInTheDocument();
   });
 
   it('generates a writer draft from a simple prompt and applies the selected role background', async () => {
@@ -555,16 +570,16 @@ describe('app flow', () => {
       </MemoryRouter>
     );
 
-    await screen.findByText('先给一句设定，让系统替你写出这局戏。');
+    await screen.findByText('设定你的故事。');
     await user.type(screen.getByLabelText('故事 Prompt'), '风雪山庄，4人，逃生/破案');
-    await user.click(screen.getByRole('button', { name: '生成剧本草案' }));
+    await user.click(screen.getByRole('button', { name: '生成剧本' }));
+    await screen.findByText('构建故事与角色。');
 
     await screen.findByRole('heading', { name: '风雪山庄疑局', level: 2 });
     await user.click(screen.getByRole('button', { name: /值夜医生/ }));
 
     expect(screen.getByLabelText('角色背景')).toHaveValue('你曾在一次救援里慢了一步，这次不想再失手。');
-    expect(screen.getByText('编剧建议 Tag：说客')).toBeInTheDocument();
-    expect(screen.getByText('确认那道旧伤是谁造成的')).toBeInTheDocument();
+    expect(screen.getByText('建议 Tag：说客')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /修缮顾问/ }));
     expect(screen.getByLabelText('自定义 Tag')).toHaveValue('冷静');
   });
@@ -625,7 +640,7 @@ describe('app flow', () => {
       </MemoryRouter>
     );
 
-    await screen.findByText('当前位置：船员舱');
+    expect((await screen.findAllByText('船员舱')).length).toBeGreaterThan(0);
     await user.type(screen.getByLabelText('自然语言行动'), '查看旧记录');
     await user.click(screen.getByRole('button', { name: '执行行动' }));
 
