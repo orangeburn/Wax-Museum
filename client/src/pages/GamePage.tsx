@@ -50,12 +50,14 @@ export function GamePage() {
   const itemLabels: Partial<Record<ItemId, string>> = session?.scenario?.glossary?.itemLabels ?? {};
   const secretAgenda = session?.player.secretAgenda ?? null;
   const isResolved = session?.phase === 'escaped' || session?.phase === 'failed';
+  const currentEnvironment = session ? (session.world.environment?.[session.player.locationId] ?? []) : [];
   const resolutionTitle = session?.phase === 'escaped' ? `你活着离开了 ${session?.scenario.title ?? '现场'}。` : `${session?.scenario.title ?? '这个现场'} 吞掉了最后一口气。`;
   const resolutionSummary =
     actionFeedback?.narration.scene ??
     latestEntry?.publicText ??
     (session?.phase === 'escaped' ? `撤离完成。` : '秩序彻底崩塌。');
   const playerAp = session?.world.playerActionPoints ?? 0;
+  const activeActorId = session?.world.activeActorId;
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -352,7 +354,10 @@ export function GamePage() {
             {!isResolved ? (
               <Link to="/" className="muted-copy" style={{ fontSize: '0.75rem' }}>返回首页</Link>
             ) : (
-              <Link to="/" className="muted-copy">再开一局</Link>
+              <div className="hero-actions">
+                <Link to={`/session/${session.sessionId}/finale`} className="finale-link">生成结算故事</Link>
+                <Link to="/" className="muted-copy">再开一局</Link>
+              </div>
             )}
           </form>
         </section>
@@ -366,6 +371,44 @@ export function GamePage() {
             </CardHeader>
             <CardContent>
               <p>{getLocationDescription(session, session.player.locationId)}</p>
+            </CardContent>
+          </Card>
+          <Card className="section-surface scene-environment-panel">
+            <CardHeader className="panel-header">
+              <p className="panel-kicker">现场动态</p>
+              <h2>同场景可见</h2>
+            </CardHeader>
+            <CardContent>
+              <ol className="scene-environment-list">
+                {currentEnvironment.length ? currentEnvironment.map((entry) => (
+                  <li key={entry.id}>
+                    <div>
+                      <strong>{entry.actorLabel}</strong>
+                      <span>{`R${entry.round} / #${entry.step}`}</span>
+                    </div>
+                    <p>{entry.summary}</p>
+                  </li>
+                )) : (
+                  <li className="muted-copy">这个场景暂时没有新的可见变化。</li>
+                )}
+              </ol>
+            </CardContent>
+          </Card>
+          <Card className="section-surface">
+            <CardHeader className="panel-header">
+              <p className="panel-kicker">本回合顺序</p>
+              <h2>投骰决定先后</h2>
+            </CardHeader>
+            <CardContent>
+              <ol className="turn-order-list">
+                {(session.world.turnOrder ?? []).map((entry, index) => (
+                  <li key={entry.actorId} className={entry.actorId === activeActorId ? 'active-turn-entry' : ''}>
+                    <span>{index + 1}</span>
+                    <strong>{entry.actorLabel}</strong>
+                    <em>{entry.initiative}</em>
+                  </li>
+                ))}
+              </ol>
             </CardContent>
           </Card>
           <Card className="section-surface">

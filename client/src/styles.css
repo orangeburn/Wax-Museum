@@ -114,6 +114,18 @@ body::before {
   outline: none;
 }
 
+.finale-link {
+  display: inline-grid;
+  min-height: 2.5rem;
+  place-items: center;
+  padding: 0 0.9rem;
+  border: 1px solid rgba(201, 177, 125, 0.34);
+  background: rgba(201, 177, 125, 0.12);
+  color: rgba(244, 239, 230, 0.94);
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
 .api-key-popover {
   width: min(22rem, calc(100vw - 1.5rem));
   border: 1px solid rgba(231, 225, 213, 0.14);
@@ -166,6 +178,10 @@ option {
 
 .shell-game {
   padding-top: 1.25rem;
+}
+
+.shell-finale {
+  padding-top: clamp(2rem, 5vw, 4rem);
 }
 
 .page-hero {
@@ -569,6 +585,127 @@ p {
   font-size: 1.2rem;
 }
 
+.finale-board {
+  display: grid;
+  gap: 1.2rem;
+  margin-bottom: 1.25rem;
+  padding: clamp(1rem, 2.2vw, 1.5rem);
+  border: 1px solid rgba(201, 177, 125, 0.18);
+  background:
+    linear-gradient(135deg, rgba(201, 177, 125, 0.08), transparent 42%),
+    rgba(255, 255, 255, 0.035);
+}
+
+.finale-heading {
+  display: grid;
+  gap: 0.45rem;
+  max-width: 62rem;
+}
+
+.finale-heading h2 {
+  font-family: "Noto Serif SC", serif;
+  font-size: clamp(1.7rem, 4vw, 3.1rem);
+  line-height: 1.12;
+}
+
+.finale-layout {
+  display: grid;
+  gap: 1.1rem;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 0.32fr);
+  align-items: start;
+}
+
+.finale-main,
+.finale-section,
+.finale-timeline {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.highlight-grid {
+  display: grid;
+  gap: 0.85rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.highlight-card {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+  padding: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.highlight-player {
+  border-color: rgba(201, 177, 125, 0.28);
+  background: rgba(201, 177, 125, 0.045);
+}
+
+.highlight-npc {
+  border-color: rgba(117, 190, 168, 0.18);
+}
+
+.highlight-title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  justify-content: space-between;
+  align-items: center;
+  min-width: 0;
+}
+
+.highlight-title h3 {
+  font-size: 1.05rem;
+  overflow-wrap: anywhere;
+}
+
+.highlight-card ul,
+.finale-timeline ol {
+  display: grid;
+  gap: 0.55rem;
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+.highlight-card li,
+.highlight-card p,
+.finale-timeline li {
+  color: rgba(231, 225, 213, 0.76);
+  font-size: 0.9rem;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.highlight-card p {
+  padding-top: 0.65rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.novel-paper {
+  display: grid;
+  gap: 1rem;
+  padding: clamp(1rem, 2vw, 1.35rem);
+  border: 1px solid rgba(231, 225, 213, 0.12);
+  background: rgba(10, 9, 11, 0.34);
+}
+
+.novel-paper p {
+  color: rgba(244, 239, 230, 0.9);
+  font-family: "Noto Serif SC", serif;
+  font-size: 1rem;
+  line-height: 1.9;
+  overflow-wrap: anywhere;
+}
+
+.finale-timeline {
+  position: sticky;
+  top: 1rem;
+  padding: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.025);
+}
+
 .sidebar-block,
 .log-header,
 .narration-preview,
@@ -681,6 +818,100 @@ p {
   background: rgba(201, 177, 125, 0.035);
 }
 
+.scene-environment-panel {
+  border-color: rgba(117, 190, 168, 0.16);
+  background: rgba(117, 190, 168, 0.035);
+}
+
+.scene-environment-list {
+  display: grid;
+  gap: 0.65rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.scene-environment-list li {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.scene-environment-list li:last-child {
+  border-bottom: 0;
+}
+
+.scene-environment-list div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: space-between;
+  color: rgba(231, 225, 213, 0.54);
+  font-size: 0.78rem;
+}
+
+.scene-environment-list strong {
+  color: rgba(244, 239, 230, 0.9);
+}
+
+.scene-environment-list p {
+  color: rgba(231, 225, 213, 0.78);
+  font-size: 0.9rem;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.turn-order-list {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.turn-order-list li {
+  display: grid;
+  grid-template-columns: 1.8rem minmax(0, 1fr) auto;
+  gap: 0.6rem;
+  align-items: center;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.turn-order-list span,
+.turn-order-list em {
+  color: rgba(231, 225, 213, 0.52);
+  font-size: 0.78rem;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.turn-order-list strong {
+  overflow-wrap: anywhere;
+}
+
+.turn-order-list .active-turn-entry {
+  border-color: rgba(201, 177, 125, 0.35);
+  background: rgba(201, 177, 125, 0.08);
+}
+
+.finale-page-header {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  margin-bottom: 1.25rem;
+  padding: clamp(1.2rem, 3vw, 2rem);
+  border: 1px solid rgba(201, 177, 125, 0.18);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.finale-page-header h1 {
+  font-size: clamp(2rem, 5vw, 4.4rem);
+}
+
 .public-chat-stream {
   display: grid;
   gap: 0.65rem;
@@ -790,11 +1021,14 @@ p {
   .hero-panel,
   .create-layout,
   .game-grid,
-  .resolution-banner {
+  .resolution-banner,
+  .finale-page-header,
+  .finale-layout {
     grid-template-columns: 1fr;
   }
 
-  .briefing-panel {
+  .briefing-panel,
+  .finale-timeline {
     position: static;
   }
 }
@@ -832,6 +1066,10 @@ p {
   .select-row,
   .command-row,
   .public-chat-form {
+    grid-template-columns: 1fr;
+  }
+
+  .highlight-grid {
     grid-template-columns: 1fr;
   }
 

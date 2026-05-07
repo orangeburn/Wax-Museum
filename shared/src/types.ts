@@ -270,6 +270,7 @@ export interface WorldState {
   turnOrder?: TurnOrderEntry[];
   activeActorId?: string;
   storyBeatIndex?: number;
+  environment: Record<LocationId, SceneEnvironmentEntry[]>;
   locations: Record<LocationId, LocationDefinition>;
   visitedLocations: LocationId[];
   flags: WorldFlags;
@@ -344,6 +345,37 @@ export interface PublicMessage {
   timestamp: string;
 }
 
+export interface SceneEnvironmentEntry {
+  id: string;
+  step: number;
+  round: number;
+  locationId: LocationId;
+  actorId: string;
+  actorLabel: string;
+  actorType: 'player' | 'npc' | 'system';
+  summary: string;
+  timestamp: string;
+}
+
+export interface CharacterHighlight {
+  actorId: string;
+  actorLabel: string;
+  actorType: 'player' | 'npc';
+  outcome: string;
+  highlights: string[];
+  closingLine: string;
+}
+
+export interface FinaleReport {
+  title: string;
+  subtitle: string;
+  verdict: string;
+  timeline: string[];
+  characterHighlights: CharacterHighlight[];
+  novelTitle: string;
+  novelStory: string;
+}
+
 export interface SaveMeta {
   sessionId: string;
   title: string;
@@ -365,6 +397,7 @@ export interface SessionSnapshot {
   objectives: ObjectiveState;
   logTail: EventLogEntry[];
   publicMessages: PublicMessage[];
+  finale?: FinaleReport;
 }
 
 export interface GameSession {
@@ -376,6 +409,7 @@ export interface GameSession {
   objectives: ObjectiveState;
   eventLog: EventLogEntry[];
   publicMessages: PublicMessage[];
+  finale?: FinaleReport;
   saveMeta: SaveMeta;
 }
 
@@ -500,6 +534,7 @@ export interface ActorObservation {
   currentLocation: LocationDefinition;
   visibleLocations: LocationDefinition[];
   visibleSceneObjects: SceneObjectDefinition[];
+  visibleEnvironment: SceneEnvironmentEntry[];
   visibleNpcs: Array<{
     id: string;
     name: string;

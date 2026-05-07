@@ -4,7 +4,10 @@ import {
   SUBMARINE_TEMPLATE,
   type ActionResponse,
   type ActionType,
+  type CharacterHighlight,
   type CreateSessionRequest,
+  type EventLogEntry,
+  type FinaleReport,
   type GameSession,
   type ItemId,
   type LocationId,
@@ -147,6 +150,182 @@ export async function postPublicMessage(sessionId: string, content: string) {
   const session = appendPlayerPublicMessage(requireSession(sessionId), message);
   writeSession(session);
   return buildSnapshot(session);
+}
+
+export async function generateFinaleReport(sessionId: string, force = false) {
+  const session = requireSession(sessionId);
+  if (session.phase !== 'escaped' && session.phase !== 'failed') {
+    throw new ApiResponseError('本局尚未结束，不能生成结算故事。');
+  }
+  if (session.finale && !force) {
+    return session.finale;
+  }
+
+  const draft = buildFinaleReport(session);
+  const generated = await requestLlmObject<Partial<FinaleReport>>(
+    [
+      '你是中文互动悬疑游戏的结算编剧。请只输出 JSON，不要 markdown。',
+      'JSON 字段必须是：title,subtitle,verdict,timeline,characterHighlights,novelTitle,novelStory。',
+      'characterHighlights 是数组，每项包含 actorId,actorLabel,actorType,outcome,highlights,closingLine。',
+      '根据完整游戏记录生成每个角色的高光时刻，并写一篇中短篇小说。小说要有文学叙事感，但必须忠于游戏过程，不要凭空改写胜负、地点和关键行动。'
+    ].join(''),
+    {
+      scenario: session.scenario,
+      player: session.player,
+      world: session.world,
+      objectives: session.objectives,
+      eventLog: session.eventLog,
+      publicMessages: session.publicMessages,
+      referenceShape: draft
+    }
+  );
+  session.finale = normalizeFinaleReport(generated, draft);
+  writeSession(session);
+  return session.finale;
+}
+
+function normalizeFinaleReport(input: Partial<FinaleReport>, fallback: FinaleReport): FinaleReport {
+  const characterHighlights = Array.isArray(input.characterHighlights) && input.characterHighlights.length
+    ? input.characterHighlights.map((entry, index) => ({
+        actorId: clean(entry?.actorId, fallback.characterHighlights[index]?.actorId ?? `actor-${index + 1}`),
+        actorLabel: clean(entry?.actorLabel, fallback.characterHighlights[index]?.actorLabel ?? '未知角色'),
+        actorType: entry?.actorType === 'npc' ? 'npc' as const : 'player' as const,
+        outcome: clean(entry?.outcome, fallback.characterHighlights[index]?.outcome ?? '见证者'),
+        highlights: Array.isArray(entry?.highlights) && entry.highlights.length
+          ? entry.highlights.map(String).filter(Boolean).slice(0, 4)
+          : fallback.characterHighlights[index]?.highlights ?? ['留下了关键痕迹。'],
+        closingLine: clean(entry?.closingLine, fallback.characterHighlights[index]?.closingLine ?? '结局之后，仍有余波。')
+      }))
+    : fallback.characterHighlights;
+
+  return {
+    title: clean(input.title, fallback.title),
+    subtitle: clean(input.subtitle, fallback.subtitle),
+    verdict: clean(input.verdict, fallback.verdict),
+    timeline: Array.isArray(input.timeline) && input.timeline.length ? input.timeline.map(String).slice(0, 12) : fallback.timeline,
+    characterHighlights,
+    novelTitle: clean(input.novelTitle, fallback.novelTitle),
+    novelStory: clean(input.novelStory, fallback.novelStory)
+  };
+}
+
+function buildFinaleReport(session: GameSession): FinaleReport {
+  const resolved = session.phase === 'escaped';
+  const majorEvents = session.eventLog
+    .filter((entry) => entry.step > 0)
+    .slice(-10);
+  const timeline = majorEvents.length
+    ? majorEvents.map(formatTimelineEntry)
+    : session.eventLog.slice(-5).map(formatTimelineEntry);
+  const characterHighlights = buildCharacterHighlights(session, majorEvents);
+  const verdict = resolved
+    ? `${session.player.archetypeLabel}在第 ${session.world.currentRound ?? 1} 回合后离开了现场，危险停在 ${session.world.danger}。`
+    : `${session.scenario.title}没有给出第二次机会，危险停在 ${session.world.danger}，${session.scenario.countdown.label}剩余 ${session.world.oxygen}。`;
+
+  return {
+    title: resolved ? '结算：幸存记录' : '结算：失败记录',
+    subtitle: `${session.scenario.title} / ${session.scenario.storyGameMode ?? 'survival'}`,
+    verdict,
+    timeline,
+    characterHighlights,
+    novelTitle: `《${session.scenario.title}：最后一页记录》`,
+    novelStory: buildFinaleNovel(session, majorEvents, characterHighlights, resolved)
+  };
+}
+
+function buildCharacterHighlights(session: GameSession, majorEvents: EventLogEntry[]): CharacterHighlight[] {
+  const playerEvents = majorEvents.filter((entry) => entry.intent && entry.intent !== '结束回合');
+  const agenda = session.player.secretAgenda;
+  const playerHighlights = pickDistinct([
+    ...playerEvents.map((entry) => trimSentence(entry.publicText)),
+    agenda ? `${agenda.title}：${agenda.status === 'completed' ? '完成' : agenda.status === 'failed' ? '失败' : '未决'} ${agenda.progress}/${agenda.requiredProgress}` : '',
+    session.player.inventory.length ? `最终保留物品：${session.player.inventory.map((itemId) => getItemLabel(session, itemId)).join('、')}` : ''
+  ], 3);
+
+  const highlights: CharacterHighlight[] = [{
+    actorId: 'player',
+    actorLabel: session.player.archetypeLabel,
+    actorType: 'player',
+    outcome: session.phase === 'escaped' ? '幸存者' : '失陷者',
+    highlights: playerHighlights.length ? playerHighlights : ['在混乱中坚持到了最后一刻。'],
+    closingLine: agenda?.status === 'completed'
+      ? `秘密目标也被带出了${session.scenario.title}。`
+      : `仍有一些真相留在了${session.scenario.title}里。`
+  }];
+
+  (session.scenario.npcs ?? []).forEach((npc) => {
+    const npcMessages = session.publicMessages
+      .filter((message) => message.speakerId === npc.id)
+      .slice(-2)
+      .map((message) => message.content);
+    const npcEvents = majorEvents
+      .filter((entry) => entry.publicText.includes(npc.name) || entry.systemText.includes(npc.name))
+      .map((entry) => trimSentence(entry.publicText));
+    const npcHighlights = pickDistinct([
+      ...npcEvents,
+      ...npcMessages,
+      npc.status,
+      npc.clue ? `留下线索：${npc.clue}` : ''
+    ], 3);
+
+    highlights.push({
+      actorId: npc.id,
+      actorLabel: npc.name,
+      actorType: 'npc',
+      outcome: npc.attitude === 'hostile' ? '施压者' : npc.attitude === 'friendly' ? '协助者' : '旁观者',
+      highlights: npcHighlights.length ? npcHighlights : ['在关键时刻留下了自己的判断。'],
+      closingLine: npc.hiddenDrive ? `真正驱动他的，是${npc.hiddenDrive}。` : '他的真实意图仍然模糊。'
+    });
+  });
+
+  return highlights;
+}
+
+function buildFinaleNovel(
+  session: GameSession,
+  majorEvents: EventLogEntry[],
+  characterHighlights: CharacterHighlight[],
+  resolved: boolean
+) {
+  const opening = `${session.scenario.openingLine}后来回想起来，${session.player.archetypeLabel}最先记住的并不是警报，而是${getLocationLabelFromSession(session, session.player.locationId)}里那种被迫屏住呼吸的安静。${session.scenario.premise}`;
+  const eventParagraphs = majorEvents.slice(0, 6).map((entry, index) => {
+    const turn = index === 0 ? '起初' : index < 3 ? '随后' : index < 5 ? '更晚些时候' : '临近终局';
+    return `${turn}，${trimSentence(entry.publicText)} ${entry.systemText ? entry.systemText.replace(/[()]/g, '') : ''}`;
+  });
+  const castParagraph = characterHighlights
+    .map((entry) => `${entry.actorLabel}像${entry.outcome}一样被记下：${entry.highlights[0] ?? entry.closingLine}`)
+    .join('；');
+  const ending = resolved
+    ? `当最后一道阻隔被甩在身后，${session.player.archetypeLabel}终于明白，逃离并不等于故事结束。那些被说出口的、被藏起来的、被迫交换的线索，全都跟着他一起离开，成为下一次追问的证词。`
+    : `最后，现场没有崩成一声巨响，而是慢慢收紧。每个人都还保留着自己的理由，可理由不能替人争取时间。${session.scenario.title}把答案留在原地，也把代价留在了所有人的沉默里。`;
+
+  return [opening, ...eventParagraphs, castParagraph, ending]
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+function formatTimelineEntry(entry: EventLogEntry) {
+  return `#${entry.step} ${entry.filteredAction}：${trimSentence(entry.publicText)}`;
+}
+
+function trimSentence(input: string) {
+  return input.replace(/\s+/g, ' ').trim().slice(0, 120);
+}
+
+function pickDistinct(input: string[], limit: number) {
+  const seen = new Set<string>();
+  return input
+    .map((entry) => entry.trim())
+    .filter((entry) => {
+      if (!entry || seen.has(entry)) return false;
+      seen.add(entry);
+      return true;
+    })
+    .slice(0, limit);
+}
+
+function getLocationLabelFromSession(session: GameSession, locationId: string) {
+  return session.world.locations[locationId]?.label ?? locationId;
 }
 
 function readSaveIndex() {

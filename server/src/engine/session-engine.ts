@@ -18,6 +18,7 @@ import {
   type PublicMessage,
   type Resolution,
   type SaveMeta,
+  type SceneEnvironmentEntry,
   type SelectedRoleProfile,
   type SessionSnapshot,
   type SkillKey,
@@ -185,6 +186,7 @@ export function createNewSession(request: CreateSessionRequest, scenario?: Story
       turnOrder: [],
       activeActorId: PLAYER_ACTOR_ID,
       storyBeatIndex: activeScenario.gameplayMode === 'llm' ? 0 : undefined,
+      environment: createEmptyEnvironment(activeScenario),
       locations: structuredClone(activeScenario.locations),
       visitedLocations: [startLocationId],
       flags: {
@@ -225,6 +227,7 @@ export function createNewSession(request: CreateSessionRequest, scenario?: Story
     speakerType: 'system',
     content: activeScenario.openingLine
   });
+  recordSceneEnvironment(session, startLocationId, 'system', '公屏', 'system', activeScenario.openingLine);
 
   return refreshDerivedState(session);
 }
@@ -279,6 +282,53 @@ function buildNpcPoolFromRoles(
 
 function createSessionId() {
   return globalThis.crypto?.randomUUID?.() ?? `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function createEmptyEnvironment(scenario: StoryScenario): Record<LocationId, SceneEnvironmentEntry[]> {
+  return Object.fromEntries(
+    (Object.keys(scenario.locations) as LocationId[]).map((locationId) => [locationId, []])
+  ) as Record<LocationId, SceneEnvironmentEntry[]>;
+}
+
+function ensureEnvironment(session: GameSession) {
+  session.world.environment ??= createEmptyEnvironment(session.scenario);
+  (Object.keys(session.world.locations) as LocationId[]).forEach((locationId) => {
+    session.world.environment[locationId] ??= [];
+  });
+  return session.world.environment;
+}
+
+function recordSceneEnvironment(
+  session: GameSession,
+  locationId: LocationId,
+  actorId: string,
+  actorLabel: string,
+  actorType: SceneEnvironmentEntry['actorType'],
+  summary: string
+) {
+  const trimmed = summary.replace(/\s+/g, ' ').trim();
+  if (!trimmed) {
+    return;
+  }
+
+  const environment = ensureEnvironment(session);
+  const bucket = environment[locationId] ?? [];
+  const entry: SceneEnvironmentEntry = {
+    id: `env-${session.world.turn}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    step: session.world.turn,
+    round: session.world.currentRound ?? 1,
+    locationId,
+    actorId,
+    actorLabel,
+    actorType,
+    summary: trimmed.slice(0, 180),
+    timestamp: new Date().toISOString()
+  };
+  environment[locationId] = [entry, ...bucket].slice(0, 8);
+}
+
+function getVisibleEnvironment(session: GameSession, locationId: LocationId) {
+  return [...(ensureEnvironment(session)[locationId] ?? [])];
 }
 
 function getItemLabel(session: GameSession, itemId: ItemId) {
@@ -595,6 +645,7 @@ function resolveNpcTurn(session: GameSession, npc: StoryNpc, randomSource: () =>
     if ((apPool[npc.id] ?? 0) >= actionCost) {
       apPool[npc.id] = Math.max(0, (apPool[npc.id] ?? 0) - actionCost);
       session.world.turn += 1;
+      const actionLocationId = npc.locationId;
 
       if (action.type === 'share-clue') {
         npc.status = '压低声音提供了关键信息。';
@@ -645,6 +696,7 @@ function resolveNpcTurn(session: GameSession, npc: StoryNpc, randomSource: () =>
       npc.privateState!.stress = clamp(npc.privateState!.stress + action.stressDelta, 0, 5);
       npc.privateState!.lastAction = action.type;
       npc.privateState!.memory = [action.memory, ...npc.privateState!.memory].slice(0, 6);
+      recordSceneEnvironment(session, actionLocationId, npc.id, npc.name, 'npc', npc.status);
       stateChanges.push(`${npc.name} 行动点 -${actionCost}`);
     } else {
       apPool[npc.id] = 0;
@@ -767,6 +819,7 @@ async function resolveNpcTurnWithDecider(
     if ((apPool[npc.id] ?? 0) >= actionCost) {
       apPool[npc.id] = Math.max(0, (apPool[npc.id] ?? 0) - actionCost);
       session.world.turn += 1;
+      const actionLocationId = npc.locationId;
 
       if (action.type === 'share-clue') {
         npc.status = '压低声音提供了关键信息。';
@@ -817,6 +870,7 @@ async function resolveNpcTurnWithDecider(
       npc.privateState!.stress = clamp(npc.privateState!.stress + action.stressDelta, 0, 5);
       npc.privateState!.lastAction = action.type;
       npc.privateState!.memory = [action.memory, ...npc.privateState!.memory].slice(0, 6);
+      recordSceneEnvironment(session, actionLocationId, npc.id, npc.name, 'npc', npc.status);
       stateChanges.push(`${npc.name} 行动点 -${actionCost}`);
     } else {
       apPool[npc.id] = 0;
@@ -870,6 +924,7 @@ async function resolveTurnQueueUntilPlayerWithDecider(
 }
 
 export function buildSnapshot(session: GameSession): SessionSnapshot {
+  ensureEnvironment(session);
   const scenario = structuredClone(session.scenario);
   if (scenario.npcs?.length) {
     scenario.npcs = scenario.npcs.map((npc) => ({
@@ -918,6 +973,7 @@ export function buildActorObservation(session: GameSession, actorId: string): Ac
     currentLocation,
     visibleLocations: Array.from(visibleLocationIds).map((locationId) => requireLocation(session, locationId)),
     visibleSceneObjects: currentLocation.sceneObjects ?? [],
+    visibleEnvironment: getVisibleEnvironment(session, actorLocationId),
     visibleNpcs,
     publicWorld: {
       turn: session.world.turn,
@@ -935,7 +991,10 @@ export function buildActorObservation(session: GameSession, actorId: string): Ac
     },
     inventory: isPlayer ? [...session.player.inventory] : [...getNpcInventory(npc!)],
     availableActionsHint: listActorActions(session, actorId),
-    recentPublicEvents: session.eventLog.slice(-LOG_TAIL_SIZE).map((entry) => entry.publicText),
+    recentPublicEvents: [
+      ...getVisibleEnvironment(session, actorLocationId).map((entry) => entry.summary),
+      ...session.eventLog.slice(-LOG_TAIL_SIZE).map((entry) => entry.publicText)
+    ].slice(0, LOG_TAIL_SIZE),
     publicMessages: getPublicMessageTail(session),
     privateBrief: npc?.privateState
       ? {
@@ -1321,6 +1380,9 @@ export function applyParsedAction(
 
   refreshDerivedState(working);
   applySecretAgendaProgress(working, parsed.rawIntent, presentation.publicText);
+  if (filteredAction.validity !== 'rejected') {
+    recordSceneEnvironment(working, working.player.locationId, PLAYER_ACTOR_ID, working.player.archetypeLabel, 'player', presentation.publicText);
+  }
   working.eventLog.push(createLogEntry(working, parsed.rawIntent, filteredAction, resolution, presentation));
   refreshDerivedState(working);
 
@@ -1506,6 +1568,9 @@ export async function applyParsedActionWithNpcAi(
 
   refreshDerivedState(working);
   applySecretAgendaProgress(working, parsed.rawIntent, presentation.publicText);
+  if (filteredAction.validity !== 'rejected') {
+    recordSceneEnvironment(working, working.player.locationId, PLAYER_ACTOR_ID, working.player.archetypeLabel, 'player', presentation.publicText);
+  }
   working.eventLog.push(createLogEntry(working, parsed.rawIntent, filteredAction, resolution, presentation));
   refreshDerivedState(working);
 
@@ -1977,21 +2042,27 @@ function resolveNpcPairInteractions(session: GameSession, randomSource: () => nu
 
     if (friendly.length > 0 && hostile.length > 0 && randomSource() < 0.6) {
       dangerDelta += 1;
-      publicSnippets.push(`${friendly[0]!.name}和${hostile[0]!.name}在${locationLabel}爆发了激烈争执。`);
+      const summary = `${friendly[0]!.name}和${hostile[0]!.name}在${locationLabel}爆发了激烈争执。`;
+      publicSnippets.push(summary);
+      recordSceneEnvironment(session, locationId, 'system', '现场', 'system', summary);
       stateChanges.push(`NPC互斥：${friendly[0]!.name}与${hostile[0]!.name}冲突升级`);
       continue;
     }
 
     if (friendly.length >= 2 && randomSource() < 0.5) {
       dangerDelta -= 1;
-      publicSnippets.push(`${friendly[0]!.name}和${friendly[1]!.name}在${locationLabel}迅速交换了情报。`);
+      const summary = `${friendly[0]!.name}和${friendly[1]!.name}在${locationLabel}迅速交换了情报。`;
+      publicSnippets.push(summary);
+      recordSceneEnvironment(session, locationId, 'system', '现场', 'system', summary);
       stateChanges.push(`NPC协同：${friendly[0]!.name}与${friendly[1]!.name}稳定了局势`);
       continue;
     }
 
     if (hostile.length >= 2 && randomSource() < 0.5) {
       damage += 1;
-      publicSnippets.push(`${hostile[0]!.name}和${hostile[1]!.name}的对抗波及到周边，局势更加失控。`);
+      const summary = `${hostile[0]!.name}和${hostile[1]!.name}的对抗波及到周边，局势更加失控。`;
+      publicSnippets.push(summary);
+      recordSceneEnvironment(session, locationId, 'system', '现场', 'system', summary);
       stateChanges.push(`NPC内斗：${hostile[0]!.name}与${hostile[1]!.name}造成连带伤害`);
       systemSnippets.push(`${locationLabel}发生了高风险 NPC 对抗。`);
     }

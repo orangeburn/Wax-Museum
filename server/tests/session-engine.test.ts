@@ -322,6 +322,60 @@ describe('session engine', () => {
     expect(result.resolution.stateChanges.join(' / ')).toContain('NPC协助');
   });
 
+  it('records same-location NPC actions as visible scene environment', async () => {
+    const session = createNewSession({
+      templateId: 'submarine-escape',
+      archetypeId: 'engineer',
+      customBackground: '',
+      customTag: ''
+    });
+    session.player.locationId = 'engine-room';
+    session.scenario.npcs = [
+      {
+        id: 'npc-helper',
+        name: '联络员',
+        publicIdentity: '后勤接口人',
+        hiddenDrive: '确认玩家掌握了多少信息',
+        attitude: 'friendly',
+        locationId: 'engine-room',
+        clue: '“先问谁靠近过控制室。”',
+        status: '保持观望，暂不表态。'
+      }
+    ];
+    session.world.playerActionPoints = 0;
+    session.world.npcActionPoints = { 'npc-helper': 2 };
+    session.world.turnOrder = [
+      { actorId: 'player', actorLabel: session.player.archetypeLabel, actorType: 'player', initiative: 12 },
+      { actorId: 'npc-helper', actorLabel: '联络员', actorType: 'npc', initiative: 8 }
+    ];
+    session.world.activeActorId = 'player';
+
+    const result = await applyParsedActionWithNpcAi(
+      session,
+      {
+        type: 'help',
+        rawIntent: '结束回合',
+        normalizedIntent: '结束回合',
+        targetLabel: '当前区域',
+        consumesTurn: false
+      },
+      () => 0.99,
+      async () => ({
+        intent: '向玩家分享线索',
+        actionType: 'persuade',
+        reason: '同场景可见行动'
+      })
+    );
+
+    const playerObservation = buildActorObservation(result.session, 'player');
+    const npcObservation = buildActorObservation(result.session, 'npc-helper');
+
+    const npcEnvironment = result.session.world.environment['engine-room'].find((entry) => entry.actorLabel === '联络员');
+    expect(npcEnvironment?.summary).toContain('关键信息');
+    expect(playerObservation.visibleEnvironment.some((entry) => entry.summary.includes('关键信息'))).toBe(true);
+    expect(npcObservation.visibleEnvironment.some((entry) => entry.summary.includes('关键信息'))).toBe(true);
+  });
+
   it('lets NPC AI publish public chat messages during its turn', async () => {
     const session = createNewSession({
       templateId: 'submarine-escape',
