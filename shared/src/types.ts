@@ -357,6 +357,32 @@ export interface SceneEnvironmentEntry {
   timestamp: string;
 }
 
+export interface GmNpcTrace {
+  id: string;
+  name: string;
+  publicIdentity: string;
+  hiddenDrive: string;
+  attitude: StoryNpc['attitude'];
+  locationId: LocationId;
+  locationLabel: string;
+  status: string;
+  clue: string;
+  inventory: ItemId[];
+  actionPoints: number;
+  motiveAnchor?: string;
+  interactionTips: string[];
+  thought: {
+    coreGoal: string;
+    shortTermGoal: string;
+    strategy: string;
+    stress: number;
+  };
+  lastAction?: string;
+  memory: string[];
+  availableActionsHint: string[];
+  visibleEvents: string[];
+}
+
 export interface CharacterHighlight {
   actorId: string;
   actorLabel: string;
@@ -397,6 +423,7 @@ export interface SessionSnapshot {
   objectives: ObjectiveState;
   logTail: EventLogEntry[];
   publicMessages: PublicMessage[];
+  gmNpcTraces: GmNpcTrace[];
   finale?: FinaleReport;
 }
 

@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { Button, Input } from '@heroui/react';
+import { useLocation } from 'react-router-dom';
 import {
   clearLlmSettings,
   getDefaultLlmSettings,
@@ -10,10 +11,12 @@ import {
 } from '../lib/llm-settings';
 
 export function ApiKeySettings() {
+  const location = useLocation();
   const [open, setOpen] = useState(false);
   const [settings, setSettings] = useState<ClientLlmSettings>(() => readLlmSettings());
   const [draft, setDraft] = useState<ClientLlmSettings>(() => readLlmSettings());
   const hasKey = Boolean(settings.apiKey);
+  const showGmButton = /^\/session\/[^/]+$/.test(location.pathname);
 
   useEffect(() => {
     function syncSettings() {
@@ -46,6 +49,10 @@ export function ApiKeySettings() {
     setDraft(defaults);
   }
 
+  function handleOpenGm() {
+    window.dispatchEvent(new CustomEvent('wax-museum:open-gm'));
+  }
+
   return (
     <div className="api-key-dock">
       <div className="top-link-row">
@@ -67,6 +74,17 @@ export function ApiKeySettings() {
         >
           {hasKey ? 'API Key 已启用' : '填写 API Key'}
         </Button>
+        {showGmButton ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            className="gm-top-trigger"
+            onClick={handleOpenGm}
+          >
+            GM
+          </Button>
+        ) : null}
       </div>
 
       {open ? (

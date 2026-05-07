@@ -10,6 +10,7 @@ import {
   type EventLogEntry,
   type FilteredAction,
   type GameSession,
+  type GmNpcTrace,
   type ItemId,
   type LocationId,
   type NpcIntentDecision,
@@ -925,6 +926,7 @@ async function resolveTurnQueueUntilPlayerWithDecider(
 
 export function buildSnapshot(session: GameSession): SessionSnapshot {
   ensureEnvironment(session);
+  const gmNpcTraces = buildGmNpcTraces(session);
   const scenario = structuredClone(session.scenario);
   if (scenario.npcs?.length) {
     scenario.npcs = scenario.npcs.map((npc) => ({
@@ -944,8 +946,49 @@ export function buildSnapshot(session: GameSession): SessionSnapshot {
     world: structuredClone(session.world),
     objectives: structuredClone(session.objectives),
     logTail: session.eventLog.slice(-LOG_TAIL_SIZE),
-    publicMessages: getPublicMessageTail(session)
+    publicMessages: getPublicMessageTail(session),
+    gmNpcTraces
   };
+}
+
+function buildGmNpcTraces(session: GameSession): GmNpcTrace[] {
+  return (session.scenario.npcs ?? []).map((npc) => {
+    const privateState = npc.privateState ?? {
+      coreGoal: npc.hiddenDrive,
+      shortTermGoal: npc.motiveAnchor ?? '先维持自身安全与筹码。',
+      strategy: npc.interactionTips?.[0] ?? '先观察再行动。',
+      stress: 0,
+      memory: [],
+      lastAction: undefined
+    };
+    const observation = buildActorObservation(session, npc.id);
+
+    return {
+      id: npc.id,
+      name: npc.name,
+      publicIdentity: npc.publicIdentity,
+      hiddenDrive: npc.hiddenDrive,
+      attitude: npc.attitude,
+      locationId: npc.locationId,
+      locationLabel: requireLocation(session, npc.locationId).label,
+      status: npc.status,
+      clue: npc.clue,
+      inventory: [...getNpcInventory(npc)],
+      actionPoints: session.world.npcActionPoints?.[npc.id] ?? 0,
+      motiveAnchor: npc.motiveAnchor,
+      interactionTips: [...(npc.interactionTips ?? [])],
+      thought: {
+        coreGoal: privateState.coreGoal,
+        shortTermGoal: privateState.shortTermGoal,
+        strategy: privateState.strategy,
+        stress: privateState.stress
+      },
+      lastAction: privateState.lastAction,
+      memory: [...privateState.memory],
+      availableActionsHint: observation.availableActionsHint,
+      visibleEvents: observation.recentPublicEvents
+    };
+  });
 }
 
 export function buildActorObservation(session: GameSession, actorId: string): ActorObservation {

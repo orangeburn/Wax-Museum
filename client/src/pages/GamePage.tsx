@@ -21,12 +21,31 @@ function getLocationDescription(snapshot: SessionSnapshot, locationId: string) {
   return snapshot.world.locations[locationId]?.description ?? '这个区域的信息暂时缺失。';
 }
 
+function formatNpcAction(action?: string) {
+  switch (action) {
+    case 'share-clue': return '分享线索';
+    case 'pressure': return '施压';
+    case 'observe': return '观察';
+    case 'collect-item': return '收集物资';
+    case 'use-item': return '使用物品';
+    case 'reposition': return '移动';
+    default: return action ?? '尚未行动';
+  }
+}
+
+function formatStress(stress: number) {
+  if (stress >= 4) return '高压';
+  if (stress >= 2) return '紧绷';
+  return '稳定';
+}
+
 export function GamePage() {
   const { sessionId } = useParams<{ sessionId: string }>();
   const [session, setSession] = useState<SessionSnapshot | null>(null);
   const [intent, setIntent] = useState('');
   const [publicMessage, setPublicMessage] = useState('');
   const [actionFeedback, setActionFeedback] = useState<ActionResponse | null>(null);
+  const [gmOpen, setGmOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -46,6 +65,15 @@ export function GamePage() {
       .finally(() => setLoading(false));
   }, [sessionId]);
 
+  useEffect(() => {
+    function openGmWindow() {
+      setGmOpen(true);
+    }
+
+    window.addEventListener('wax-museum:open-gm', openGmWindow);
+    return () => window.removeEventListener('wax-museum:open-gm', openGmWindow);
+  }, []);
+
   const latestEntry = useMemo(() => session?.logTail.at(-1) ?? null, [session]);
   const itemLabels: Partial<Record<ItemId, string>> = session?.scenario?.glossary?.itemLabels ?? {};
   const secretAgenda = session?.player.secretAgenda ?? null;
@@ -58,6 +86,7 @@ export function GamePage() {
     (session?.phase === 'escaped' ? `撤离完成。` : '秩序彻底崩塌。');
   const playerAp = session?.world.playerActionPoints ?? 0;
   const activeActorId = session?.world.activeActorId;
+  const gmNpcTraces = session?.gmNpcTraces ?? [];
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -155,6 +184,77 @@ export function GamePage() {
 
   return (
     <main className="shell shell-game">
+      {gmOpen ? (
+        <section className="gm-window" role="dialog" aria-modal="false" aria-label="GM模式 NPC 思考与行动过程">
+          <header className="gm-window-header">
+            <div>
+              <p className="panel-kicker">GM 模式</p>
+              <h2>NPC 思考与行动</h2>
+            </div>
+            <Button type="button" size="sm" variant="secondary" onClick={() => setGmOpen(false)}>
+              关闭
+            </Button>
+          </header>
+          <div className="gm-window-body">
+            {gmNpcTraces.length ? gmNpcTraces.map((trace) => (
+              <article key={trace.id} className="gm-npc-card">
+                <div className="gm-npc-title">
+                  <div>
+                    <h3>{trace.name}</h3>
+                    <p>{trace.publicIdentity}</p>
+                  </div>
+                  <Chip size="sm" variant="soft">{trace.attitude}</Chip>
+                </div>
+                <div className="gm-npc-meta">
+                  <span>{trace.locationLabel}</span>
+                  <span>{`AP ${trace.actionPoints}`}</span>
+                  <span>{`${formatStress(trace.thought.stress)} ${trace.thought.stress}/5`}</span>
+                  <span>{formatNpcAction(trace.lastAction)}</span>
+                </div>
+                <dl className="gm-thought-grid">
+                  <div>
+                    <dt>隐藏动机</dt>
+                    <dd>{trace.hiddenDrive}</dd>
+                  </div>
+                  <div>
+                    <dt>当前目标</dt>
+                    <dd>{trace.thought.shortTermGoal}</dd>
+                  </div>
+                  <div>
+                    <dt>策略</dt>
+                    <dd>{trace.thought.strategy}</dd>
+                  </div>
+                  <div>
+                    <dt>状态</dt>
+                    <dd>{trace.status}</dd>
+                  </div>
+                </dl>
+                <div className="gm-npc-section">
+                  <p className="panel-kicker">行动记忆</p>
+                  <ol className="gm-memory-list">
+                    {trace.memory.length ? trace.memory.map((entry, index) => (
+                      <li key={`${trace.id}-memory-${index}`}>{entry}</li>
+                    )) : (
+                      <li className="muted-copy">还没有留下行动记录。</li>
+                    )}
+                  </ol>
+                </div>
+                <div className="gm-npc-section">
+                  <p className="panel-kicker">可选行动</p>
+                  <div className="gm-action-list">
+                    {trace.availableActionsHint.slice(0, 6).map((hint) => (
+                      <span key={hint}>{hint}</span>
+                    ))}
+                  </div>
+                </div>
+              </article>
+            )) : (
+              <p className="muted-copy">当前剧本没有可追踪的 NPC。</p>
+            )}
+          </div>
+        </section>
+      ) : null}
+
       {/* ── Status Ribbon ── */}
       <header className="status-ribbon">
         <div className="ribbon-heading">
