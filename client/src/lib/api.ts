@@ -21,6 +21,7 @@ import {
   type WriterRole
 } from '@wax-museum/shared';
 import {
+  appendPlayerPublicMessage,
   applyParsedActionWithNpcAi,
   buildActorObservation,
   buildSnapshot,
@@ -136,6 +137,16 @@ export async function postAction(sessionId: string, intent: string): Promise<Act
     sessionSnapshot,
     narration
   };
+}
+
+export async function postPublicMessage(sessionId: string, content: string) {
+  const message = content.trim();
+  if (!message) {
+    throw new ApiResponseError('公屏消息不能为空。');
+  }
+  const session = appendPlayerPublicMessage(requireSession(sessionId), message);
+  writeSession(session);
+  return buildSnapshot(session);
 }
 
 function readSaveIndex() {
@@ -448,9 +459,14 @@ function inferTarget(input: string) {
 
 async function decideNpcIntent(session: GameSession, actorId: string) {
   const observation = buildActorObservation(session, actorId);
+  const latestMessage = observation.publicMessages.at(-1);
+  const publicMessage = latestMessage && latestMessage.speakerId !== actorId
+    ? `我听见了。${observation.privateBrief?.strategy ?? '先看谁从这句话里露出破绽。'}`
+    : undefined;
   return {
     intent: observation.availableActionsHint[0] ?? '观察附近最异常的线索',
     actionType: 'inspect' as ActionType,
+    publicMessage,
     reason: '纯前端演示的本地 NPC 决策'
   };
 }

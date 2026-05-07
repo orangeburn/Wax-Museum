@@ -2,7 +2,7 @@ import type { ActionResponse, ItemId, SessionSnapshot } from '@wax-museum/shared
 import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from 'react';
 import { Button, Card, CardContent, CardHeader, Chip, TextArea } from '@heroui/react';
 import { Link, useParams } from 'react-router-dom';
-import { getSession, postAction } from '../lib/api';
+import { getSession, postAction, postPublicMessage } from '../lib/api';
 
 /** Estimate AP cost for a suggestion label based on keyword heuristics. */
 function estimateApCost(hint: string): number {
@@ -25,6 +25,7 @@ export function GamePage() {
   const { sessionId } = useParams<{ sessionId: string }>();
   const [session, setSession] = useState<SessionSnapshot | null>(null);
   const [intent, setIntent] = useState('');
+  const [publicMessage, setPublicMessage] = useState('');
   const [actionFeedback, setActionFeedback] = useState<ActionResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
@@ -109,6 +110,25 @@ export function GamePage() {
       setActionFeedback(response);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '结束回合失败');
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function handlePublicMessageSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!sessionId || !publicMessage.trim() || sending || session?.phase !== 'active') {
+      return;
+    }
+
+    setSending(true);
+    setError(null);
+    try {
+      const snapshot = await postPublicMessage(sessionId, publicMessage);
+      setSession(snapshot);
+      setPublicMessage('');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '公屏发送失败');
     } finally {
       setSending(false);
     }
@@ -274,6 +294,43 @@ export function GamePage() {
               </li>
             ))}
           </ol>
+
+          <Card className="section-surface public-chat-panel">
+            <CardHeader className="panel-header">
+              <p className="panel-kicker">公屏</p>
+              <h2>所有角色可见</h2>
+            </CardHeader>
+            <CardContent className="public-chat-content">
+              <ol className="public-chat-stream">
+                {(session.publicMessages ?? []).length ? (session.publicMessages ?? []).map((message) => (
+                  <li key={message.id} className={`public-message public-message-${message.speakerType}`}>
+                    <div className="public-message-meta">
+                      <strong>{message.speakerLabel}</strong>
+                      <span>#{message.step}</span>
+                    </div>
+                    <p>{message.content}</p>
+                  </li>
+                )) : (
+                  <li className="muted-copy">还没有人开口。</li>
+                )}
+              </ol>
+              <form className="public-chat-form" onSubmit={handlePublicMessageSubmit}>
+                <TextArea
+                  aria-label="公屏发言"
+                  rows={2}
+                  value={publicMessage}
+                  maxLength={180}
+                  onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setPublicMessage(event.target.value)}
+                  placeholder={session.phase === 'active' ? '向所有角色发一条公开信息…' : '本局已结束。'}
+                  disabled={session.phase !== 'active'}
+                  variant="secondary"
+                />
+                <Button type="submit" variant="secondary" isDisabled={sending || session.phase !== 'active' || !publicMessage.trim()}>
+                  发送
+                </Button>
+              </form>
+            </CardContent>
+          </Card>
 
           <form className="command-form" onSubmit={handleSubmit}>
             <span className="field-label">{session.phase === 'active' ? '行动输入' : '本局已结束'}</span>

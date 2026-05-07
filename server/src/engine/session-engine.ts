@@ -15,11 +15,13 @@ import {
   type NpcIntentDecision,
   type ObjectiveState,
   type ParsedAction,
+  type PublicMessage,
   type Resolution,
   type SaveMeta,
   type SelectedRoleProfile,
   type SessionSnapshot,
   type SkillKey,
+  type Stats,
   type StoryBeat,
   type StoryNpc,
   type StoryScenario,
@@ -38,6 +40,8 @@ const DEFAULT_MAX_ROUNDS = 20;
 const MIN_ROUNDS = 4;
 const MAX_ROUNDS = 20;
 const PLAYER_ACTOR_ID = 'player';
+const PUBLIC_MESSAGE_TAIL_SIZE = 24;
+const PUBLIC_MESSAGE_MAX_LENGTH = 180;
 
 const ACTION_POINT_BASE_COST: Record<ActionType, number> = {
   inspect: 1,
@@ -199,6 +203,7 @@ export function createNewSession(request: CreateSessionRequest, scenario?: Story
     },
     objectives: createEmptyObjectives(),
     eventLog: [],
+    publicMessages: [],
     saveMeta: createEmptySaveMeta()
   };
 
@@ -213,6 +218,12 @@ export function createNewSession(request: CreateSessionRequest, scenario?: Story
     publicText: `${activeScenario.openingLine} 你从${requireLocation(session, session.player.locationId).label}醒来，四周只剩零碎回声。`,
     systemText: session.objectives.dynamicGuide,
     timestamp: new Date().toISOString()
+  });
+  appendPublicMessage(session, {
+    speakerId: 'system',
+    speakerLabel: '公屏',
+    speakerType: 'system',
+    content: activeScenario.openingLine
   });
 
   return refreshDerivedState(session);
@@ -247,6 +258,7 @@ function buildNpcPoolFromRoles(
         locationId,
         clue: role.relationshipHook,
         status: buildNpcPublicStatus(attitude),
+        inventory: [],
         motiveAnchor: role.settingPack?.immediateNeed ?? role.hiddenDrive,
         interactionTips: [
           role.settingPack?.interactionGuide.trustGain ?? '先给对方可验证的小信息。',
@@ -385,6 +397,23 @@ function getNpcPseudoStats(npc: StoryNpc) {
     return { physique: 2, mind: 3, empathy: 4 } as const;
   }
   return { physique: 3, mind: 3, empathy: 2 } as const;
+}
+
+function getInventoryCapacity(stats: Pick<Stats, 'physique'>) {
+  return clamp(stats.physique + 2, 3, 7);
+}
+
+function getPlayerInventoryCapacity(session: GameSession) {
+  return getInventoryCapacity(session.player.stats);
+}
+
+function getNpcInventoryCapacity(npc: StoryNpc) {
+  return getInventoryCapacity(getNpcPseudoStats(npc));
+}
+
+function getNpcInventory(npc: StoryNpc) {
+  npc.inventory ??= [];
+  return npc.inventory;
 }
 
 function getNpcActionPointCost(npc: StoryNpc, actionType: ActionType) {
@@ -556,6 +585,8 @@ function resolveNpcTurn(session: GameSession, npc: StoryNpc, randomSource: () =>
         ? 'persuade'
         : action.type === 'pressure'
           ? 'force'
+          : action.type === 'use-item'
+            ? 'use_item'
           : action.type === 'reposition'
             ? 'move'
             : 'inspect';
@@ -583,6 +614,23 @@ function resolveNpcTurn(session: GameSession, npc: StoryNpc, randomSource: () =>
         npc.status = '保持观察，暂时不直接介入。';
         if (randomSource() < 0.2) {
           publicSnippets.push(`${npc.name}没有接话，只是记下了你刚才的动作。`);
+        }
+      } else if (action.type === 'collect-item') {
+        const collected = collectItemForNpc(session, npc, action.itemId, action.objectId);
+        npc.status = collected
+          ? `收起了${getItemLabel(session, action.itemId)}。`
+          : '检查了可携带物资，但没有腾出空间。';
+        publicSnippets.push(collected
+          ? `${npc.name}在${requireLocation(session, npc.locationId).label}收起了${getItemLabel(session, action.itemId)}。`
+          : `${npc.name}翻找了一下现场物资，但背包已经装不下了。`);
+        if (collected) stateChanges.push(`NPC获得：${npc.name} 获得 ${getItemLabel(session, action.itemId)}`);
+      } else if (action.type === 'use-item') {
+        const used = useNpcItem(session, npc, action.itemId, stateChanges);
+        npc.status = used
+          ? `使用了${getItemLabel(session, action.itemId)}处理局势。`
+          : `摸了摸${getItemLabel(session, action.itemId)}，但暂时用不上。`;
+        if (used) {
+          publicSnippets.push(`${npc.name}使用了${getItemLabel(session, action.itemId)}，现场压力稍微松动。`);
         }
       } else if (action.type === 'reposition') {
         const moveCandidates = getNpcMoveCandidates(session, npc.locationId);
@@ -698,12 +746,19 @@ async function resolveNpcTurnWithDecider(
     const llmDecision = npcIntentDecider
       ? await npcIntentDecider({ session, npc, observation }).catch(() => null)
       : null;
+    if (llmDecision?.publicMessage) {
+      appendNpcPublicMessage(session, npc, llmDecision.publicMessage);
+      publicSnippets.push(`${npc.name}在公屏发言：“${normalizePublicMessage(llmDecision.publicMessage)}”`);
+      stateChanges.push(`公屏发言：${npc.name}`);
+    }
     const action = coerceNpcDecision(session, npc, publicWorld, llmDecision, randomSource);
     const actionType: ActionType =
       action.type === 'share-clue'
         ? 'persuade'
         : action.type === 'pressure'
           ? 'force'
+          : action.type === 'use-item'
+            ? 'use_item'
           : action.type === 'reposition'
             ? 'move'
             : 'inspect';
@@ -731,6 +786,23 @@ async function resolveNpcTurnWithDecider(
         npc.status = '保持观察，暂时不直接介入。';
         if (randomSource() < 0.2) {
           publicSnippets.push(`${npc.name}没有接话，只是记下了眼前局势。`);
+        }
+      } else if (action.type === 'collect-item') {
+        const collected = collectItemForNpc(session, npc, action.itemId, action.objectId);
+        npc.status = collected
+          ? `收起了${getItemLabel(session, action.itemId)}。`
+          : '检查了可携带物资，但没有腾出空间。';
+        publicSnippets.push(collected
+          ? `${npc.name}在${requireLocation(session, npc.locationId).label}收起了${getItemLabel(session, action.itemId)}。`
+          : `${npc.name}翻找了一下现场物资，但背包已经装不下了。`);
+        if (collected) stateChanges.push(`NPC获得：${npc.name} 获得 ${getItemLabel(session, action.itemId)}`);
+      } else if (action.type === 'use-item') {
+        const used = useNpcItem(session, npc, action.itemId, stateChanges);
+        npc.status = used
+          ? `使用了${getItemLabel(session, action.itemId)}处理局势。`
+          : `摸了摸${getItemLabel(session, action.itemId)}，但暂时用不上。`;
+        if (used) {
+          publicSnippets.push(`${npc.name}使用了${getItemLabel(session, action.itemId)}，现场压力稍微松动。`);
         }
       } else if (action.type === 'reposition') {
         const moveCandidates = getNpcMoveCandidates(session, npc.locationId);
@@ -816,7 +888,8 @@ export function buildSnapshot(session: GameSession): SessionSnapshot {
     player: structuredClone(session.player),
     world: structuredClone(session.world),
     objectives: structuredClone(session.objectives),
-    logTail: session.eventLog.slice(-LOG_TAIL_SIZE)
+    logTail: session.eventLog.slice(-LOG_TAIL_SIZE),
+    publicMessages: getPublicMessageTail(session)
   };
 }
 
@@ -860,9 +933,10 @@ export function buildActorObservation(session: GameSession, actorId: string): Ac
       hp: session.player.hp,
       san: session.player.san
     },
-    inventory: isPlayer ? [...session.player.inventory] : [],
+    inventory: isPlayer ? [...session.player.inventory] : [...getNpcInventory(npc!)],
     availableActionsHint: listActorActions(session, actorId),
     recentPublicEvents: session.eventLog.slice(-LOG_TAIL_SIZE).map((entry) => entry.publicText),
+    publicMessages: getPublicMessageTail(session),
     privateBrief: npc?.privateState
       ? {
           coreGoal: npc.privateState.coreGoal,
@@ -873,6 +947,57 @@ export function buildActorObservation(session: GameSession, actorId: string): Ac
         }
       : undefined
   };
+}
+
+export function appendPlayerPublicMessage(session: GameSession, content: string): GameSession {
+  const working = structuredClone(session) as GameSession;
+  appendPublicMessage(working, {
+    speakerId: PLAYER_ACTOR_ID,
+    speakerLabel: working.player.archetypeLabel,
+    speakerType: 'player',
+    content
+  });
+  return refreshDerivedState(working);
+}
+
+function appendNpcPublicMessage(session: GameSession, npc: StoryNpc, content: string) {
+  appendPublicMessage(session, {
+    speakerId: npc.id,
+    speakerLabel: npc.name,
+    speakerType: 'npc',
+    content
+  });
+}
+
+function appendPublicMessage(
+  session: GameSession,
+  input: Pick<PublicMessage, 'speakerId' | 'speakerLabel' | 'speakerType' | 'content'>
+) {
+  const content = normalizePublicMessage(input.content);
+  if (!content) {
+    return null;
+  }
+  session.publicMessages ??= [];
+  const message: PublicMessage = {
+    id: createSessionId(),
+    step: session.world.turn,
+    speakerId: input.speakerId,
+    speakerLabel: input.speakerLabel,
+    speakerType: input.speakerType,
+    content,
+    timestamp: new Date().toISOString()
+  };
+  session.publicMessages.push(message);
+  session.publicMessages = session.publicMessages.slice(-PUBLIC_MESSAGE_TAIL_SIZE);
+  return message;
+}
+
+function getPublicMessageTail(session: GameSession) {
+  return structuredClone((session.publicMessages ?? []).slice(-PUBLIC_MESSAGE_TAIL_SIZE));
+}
+
+function normalizePublicMessage(content: string) {
+  return content.trim().replace(/\s+/g, ' ').slice(0, PUBLIC_MESSAGE_MAX_LENGTH);
 }
 
 export function filterAction(session: GameSession, parsed: ParsedAction): FilteredAction {
@@ -1673,9 +1798,10 @@ function inspectAction(session: GameSession, action: FilteredAction) {
 
 function inventoryAction(session: GameSession) {
   const items = session.player.inventory.map((item) => getItemLabel(session, item));
+  const capacity = getPlayerInventoryCapacity(session);
   return successResult(
     items.length ? `你摸了摸身上的装备：${items.join('、')}。` : '你身上几乎什么都没有，只剩呼吸越来越重。',
-    '背包检查完成。',
+    `背包检查完成（${session.player.inventory.length}/${capacity}）。`,
     []
   );
 }
@@ -1928,6 +2054,27 @@ function decideNpcAction(
     };
   }
 
+  const usefulItem = findUsefulNpcHeldItem(session, npc);
+  if (usefulItem && pressureLevel >= 5) {
+    return {
+      type: 'use-item' as const,
+      itemId: usefulItem,
+      stressDelta: -1,
+      memory: `T${publicWorld.turn}: 决定使用背包里的${getItemLabel(session, usefulItem)}。`
+    };
+  }
+
+  const collectible = findCollectibleItemAtNpcLocation(session, npc);
+  if (collectible && getNpcInventory(npc).length < getNpcInventoryCapacity(npc)) {
+    return {
+      type: 'collect-item' as const,
+      itemId: collectible.itemId,
+      objectId: collectible.objectId,
+      stressDelta: 0,
+      memory: `T${publicWorld.turn}: 在${requireLocation(session, npc.locationId).label}收集${getItemLabel(session, collectible.itemId)}。`
+    };
+  }
+
   return {
     type: 'observe' as const,
     stressDelta: pressureLevel >= 6 ? 1 : 0,
@@ -1947,6 +2094,25 @@ function coerceNpcDecision(
   }
 
   const intent = `${decision.intent ?? ''} ${decision.actionType ?? ''}`.toLowerCase();
+  const requestedItem = findNpcIntentItem(session, npc, intent);
+  if (requestedItem && (/(使用|用|启动|治疗|急救|补给|use)/.test(intent) || decision.actionType === 'use_item')) {
+    return {
+      type: 'use-item' as const,
+      itemId: requestedItem,
+      stressDelta: -1,
+      memory: `T${publicWorld.turn}: 基于可见信息决定使用${getItemLabel(session, requestedItem)}。${decision.reason ?? ''}`.trim()
+    };
+  }
+  const collectible = findCollectibleItemAtNpcLocation(session, npc);
+  if (collectible && /(拾取|拿|收集|搜索|翻找|取走|collect|take|inspect)/.test(intent)) {
+    return {
+      type: 'collect-item' as const,
+      itemId: collectible.itemId,
+      objectId: collectible.objectId,
+      stressDelta: 0,
+      memory: `T${publicWorld.turn}: 基于可见信息决定收集${getItemLabel(session, collectible.itemId)}。${decision.reason ?? ''}`.trim()
+    };
+  }
   if (/(施压|逼问|威胁|阻止|force|pressure)/.test(intent)) {
     return {
       type: 'pressure' as const,
@@ -1997,6 +2163,84 @@ function shouldTrackPlayer(
     return true;
   }
   return randomSource() < 0.35;
+}
+
+function findCollectibleItemAtNpcLocation(session: GameSession, npc: StoryNpc) {
+  const location = session.world.locations[npc.locationId];
+  const sceneObject = location?.sceneObjects?.find((entry) => entry.hiddenItemId && !entry.state?.resolved);
+  if (!sceneObject?.hiddenItemId) {
+    return null;
+  }
+  return {
+    itemId: sceneObject.hiddenItemId,
+    objectId: sceneObject.id
+  };
+}
+
+function findUsefulNpcHeldItem(session: GameSession, npc: StoryNpc): ItemId | null {
+  const inventory = getNpcInventory(npc);
+  if (session.world.oxygen <= 4 && inventory.includes('oxygen-canister')) return 'oxygen-canister';
+  if (session.world.danger >= 6 && inventory.includes('sealant-foam')) return 'sealant-foam';
+  if (inventory.includes('captain-keycard') && npc.locationId === 'control-room' && !session.world.flags.escapeBayUnlocked) return 'captain-keycard';
+  if (inventory.includes('oxygen-canister') && npc.locationId === 'escape-bay' && session.world.flags.launchInspected && !session.world.flags.launchReady) return 'oxygen-canister';
+  return null;
+}
+
+function findNpcIntentItem(session: GameSession, npc: StoryNpc, intent: string): ItemId | null {
+  return getNpcInventory(npc).find((itemId) => {
+    const label = getItemLabel(session, itemId).toLowerCase();
+    return intent.includes(label) || intent.includes(ITEM_LIBRARY[itemId].label.toLowerCase());
+  }) ?? findUsefulNpcHeldItem(session, npc);
+}
+
+function collectItemForNpc(session: GameSession, npc: StoryNpc, itemId: ItemId, objectId?: string) {
+  const inventory = getNpcInventory(npc);
+  if (inventory.includes(itemId)) return true;
+  if (inventory.length >= getNpcInventoryCapacity(npc)) return false;
+  inventory.push(itemId);
+  const object = objectId ? getSceneObject(session, objectId) : null;
+  if (object?.hiddenItemId === itemId) {
+    object.hiddenItemId = null;
+    object.state = { ...object.state, revealed: true, resolved: true, opened: true };
+  }
+  return true;
+}
+
+function useNpcItem(session: GameSession, npc: StoryNpc, itemId: ItemId, stateChanges: string[]) {
+  const inventory = getNpcInventory(npc);
+  if (!inventory.includes(itemId)) return false;
+
+  if (itemId === 'oxygen-canister') {
+    if (npc.locationId === 'escape-bay' && session.world.flags.launchInspected && !session.world.flags.launchReady) {
+      consumeNpcItem(npc, itemId);
+      session.world.flags.launchReady = true;
+      stateChanges.push(`${npc.name}完成${getTargetLabel(session, 'escape-pod')}预充`);
+      return true;
+    }
+    consumeNpcItem(npc, itemId);
+    session.world.oxygen = clamp(session.world.oxygen + 2, 0, getMaxCountdown(session));
+    stateChanges.push(`${npc.name}使用${getItemLabel(session, itemId)}：${session.scenario.countdown.recoverLabel} +2`);
+    return true;
+  }
+
+  if (itemId === 'sealant-foam') {
+    consumeNpcItem(npc, itemId);
+    session.world.danger = clamp(session.world.danger - 1, 0, 9);
+    stateChanges.push(`${npc.name}使用${getItemLabel(session, itemId)}：危险值 -1`);
+    return true;
+  }
+
+  if (itemId === 'captain-keycard' && npc.locationId === 'control-room' && !session.world.flags.escapeBayUnlocked) {
+    session.world.flags.escapeBayUnlocked = true;
+    stateChanges.push(`${npc.name}用${getItemLabel(session, itemId)}解锁${getTargetLabel(session, 'bulkhead')}`);
+    return true;
+  }
+
+  return false;
+}
+
+function consumeNpcItem(npc: StoryNpc, itemId: ItemId) {
+  npc.inventory = getNpcInventory(npc).filter((entry) => entry !== itemId);
 }
 
 function pickBestNpcMove(
@@ -2580,8 +2824,12 @@ function hasItem(session: GameSession, itemId: ItemId) {
 
 function giveItem(session: GameSession, itemId: ItemId) {
   if (!session.player.inventory.includes(itemId)) {
+    if (session.player.inventory.length >= getPlayerInventoryCapacity(session)) {
+      return false;
+    }
     session.player.inventory.push(itemId);
   }
+  return true;
 }
 
 function consumeItem(session: GameSession, itemId: ItemId) {
@@ -2845,6 +3093,9 @@ function listActorActions(session: GameSession, actorId: string): string[] {
   hints.add(`查看${location.label}`);
   (location.sceneObjects ?? []).forEach((sceneObject) => {
     sceneObject.interactionHints.slice(0, 2).forEach((hint) => hints.add(hint));
+    if (sceneObject.hiddenItemId && !sceneObject.state?.resolved) {
+      hints.add(`拾取${getItemLabel(session, sceneObject.hiddenItemId)}`);
+    }
   });
   location.connected.forEach((locationId) => hints.add(`前往${requireLocation(session, locationId).label}`));
 
@@ -2860,6 +3111,9 @@ function listActorActions(session: GameSession, actorId: string): string[] {
       hints.add(`观察${entry.name}`);
     });
 
+  getNpcInventory(npc).forEach((itemId) => {
+    hints.add(`使用${getItemLabel(session, itemId)}`);
+  });
   hints.add('保持观察');
   return Array.from(hints).slice(0, 9);
 }

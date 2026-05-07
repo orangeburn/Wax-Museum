@@ -572,7 +572,8 @@ p {
 .sidebar-block,
 .log-header,
 .narration-preview,
-.command-form {
+.command-form,
+.public-chat-content {
   display: grid;
   gap: 0.75rem;
 }
@@ -675,6 +676,68 @@ p {
   font-size: 0.78rem;
 }
 
+.public-chat-panel {
+  border-color: rgba(201, 177, 125, 0.14);
+  background: rgba(201, 177, 125, 0.035);
+}
+
+.public-chat-stream {
+  display: grid;
+  gap: 0.65rem;
+  max-height: 18rem;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.public-message {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.public-message-player {
+  border-color: rgba(201, 177, 125, 0.28);
+}
+
+.public-message-npc {
+  border-color: rgba(117, 190, 168, 0.24);
+}
+
+.public-message-system {
+  border-color: rgba(231, 225, 213, 0.12);
+}
+
+.public-message-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  color: rgba(231, 225, 213, 0.54);
+  font-size: 0.78rem;
+}
+
+.public-message-meta strong {
+  color: rgba(244, 239, 230, 0.9);
+}
+
+.public-message p {
+  color: rgba(231, 225, 213, 0.82);
+  font-size: 0.92rem;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.public-chat-form {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: minmax(0, 1fr) minmax(5rem, auto);
+  align-items: end;
+}
+
 .command-row {
   display: grid;
   gap: 0.75rem;
@@ -767,7 +830,8 @@ p {
 
   .mode-select-grid,
   .select-row,
-  .command-row {
+  .command-row,
+  .public-chat-form {
     grid-template-columns: 1fr;
   }
 

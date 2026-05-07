@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyParsedAction, applyParsedActionWithNpcAi, buildActorObservation, buildSnapshot, createNewSession } from '../src/engine/session-engine.js';
+import { appendPlayerPublicMessage, applyParsedAction, applyParsedActionWithNpcAi, buildActorObservation, buildSnapshot, createNewSession } from '../src/engine/session-engine.js';
 import { LocalAiService } from '../src/services/ai.js';
 
 describe('session engine', () => {
@@ -252,6 +252,23 @@ describe('session engine', () => {
     expect((observation.visibleNpcs[0] as { hiddenDrive?: string } | undefined)?.hiddenDrive).toBeUndefined();
   });
 
+  it('stores public chat messages in snapshots and actor observations', () => {
+    const session = createNewSession({
+      templateId: 'submarine-escape',
+      archetypeId: 'engineer',
+      customBackground: '',
+      customTag: ''
+    });
+
+    const updated = appendPlayerPublicMessage(session, '谁看见了权限卡？');
+    const snapshot = buildSnapshot(updated);
+    const observation = buildActorObservation(updated, 'player');
+
+    expect(snapshot.publicMessages.at(-1)?.content).toBe('谁看见了权限卡？');
+    expect(snapshot.publicMessages.at(-1)?.speakerType).toBe('player');
+    expect(observation.publicMessages.at(-1)?.content).toBe('谁看见了权限卡？');
+  });
+
   it('lets an async NPC intent decider drive NPC actions from observation', async () => {
     const session = createNewSession({
       templateId: 'submarine-escape',
@@ -265,7 +282,7 @@ describe('session engine', () => {
         name: '联络员',
         publicIdentity: '后勤接口人',
         hiddenDrive: '确保信息可控',
-        attitude: 'neutral',
+        attitude: 'friendly',
         locationId: 'engine-room',
         clue: '“先看供能，再谈撤离。”',
         status: '保持观望，暂不表态。'
@@ -303,6 +320,189 @@ describe('session engine', () => {
 
     expect(result.presentation.publicText).toContain('联络员');
     expect(result.resolution.stateChanges.join(' / ')).toContain('NPC协助');
+  });
+
+  it('lets NPC AI publish public chat messages during its turn', async () => {
+    const session = createNewSession({
+      templateId: 'submarine-escape',
+      archetypeId: 'engineer',
+      customBackground: '',
+      customTag: ''
+    });
+    session.scenario.npcs = [
+      {
+        id: 'npc-helper',
+        name: '联络员',
+        publicIdentity: '后勤接口人',
+        hiddenDrive: '确认玩家掌握了多少信息',
+        attitude: 'friendly',
+        locationId: 'engine-room',
+        clue: '“先问谁靠近过控制室。”',
+        status: '保持观望，暂不表态。'
+      }
+    ];
+    session.world.playerActionPoints = 0;
+    session.world.npcActionPoints = { 'npc-helper': 2 };
+    session.world.turnOrder = [
+      { actorId: 'player', actorLabel: session.player.archetypeLabel, actorType: 'player', initiative: 12 },
+      { actorId: 'npc-helper', actorLabel: '联络员', actorType: 'npc', initiative: 8 }
+    ];
+    session.world.activeActorId = 'player';
+
+    const result = await applyParsedActionWithNpcAi(
+      session,
+      {
+        type: 'help',
+        rawIntent: '结束回合',
+        normalizedIntent: '结束回合',
+        targetLabel: '当前区域',
+        consumesTurn: false
+      },
+      () => 0.99,
+      async () => ({
+        intent: '观察公屏反应',
+        actionType: 'inspect',
+        publicMessage: '我只问一句：谁最后碰过控制室？',
+        reason: '用公开问题试探其他人'
+      })
+    );
+
+    expect(result.session.publicMessages.at(-1)?.speakerLabel).toBe('联络员');
+    expect(result.session.publicMessages.at(-1)?.content).toBe('我只问一句：谁最后碰过控制室？');
+    expect(result.presentation.publicText).toContain('公屏发言');
+  });
+
+  it('lets NPCs collect scene items into a limited backpack', async () => {
+    const session = createNewSession({
+      templateId: 'submarine-escape',
+      archetypeId: 'engineer',
+      customBackground: '',
+      customTag: ''
+    });
+    session.scenario.npcs = [
+      {
+        id: 'npc-scavenger',
+        name: '联络员',
+        publicIdentity: '后勤接口人',
+        hiddenDrive: '确保物资不落空',
+        attitude: 'friendly',
+        locationId: 'engine-room',
+        clue: '“现场物资比口供更可靠。”',
+        status: '保持观望，暂不表态。',
+        inventory: ['medkit', 'sealant-foam', 'captain-keycard', 'insulated-wrench']
+      }
+    ];
+    session.world.locations['engine-room'].sceneObjects.push({
+      id: 'engine-oxygen',
+      label: '备用氧气罐',
+      category: 'container',
+      description: '一只被卡在工具箱底部的备用氧气罐。',
+      interactionHints: ['拾取备用氧气罐'],
+      hiddenItemId: 'oxygen-canister'
+    });
+    session.world.npcActionPoints = { 'npc-scavenger': 3 };
+    session.world.turnOrder = [
+      { actorId: 'npc-scavenger', actorLabel: '联络员', actorType: 'npc', initiative: 12 },
+      { actorId: 'player', actorLabel: session.player.archetypeLabel, actorType: 'player', initiative: 8 }
+    ];
+    session.world.activeActorId = 'npc-scavenger';
+
+    const result = await applyParsedActionWithNpcAi(
+      session,
+      {
+        type: 'help',
+        rawIntent: '请求提示',
+        normalizedIntent: '请求提示',
+        targetLabel: '当前区域',
+        consumesTurn: false
+      },
+      () => 0.5,
+      async () => ({
+        intent: '拾取备用氧气罐',
+        actionType: 'inspect',
+        reason: '现场有可用补给'
+      })
+    );
+
+    const npc = result.session.scenario.npcs?.[0];
+    expect(npc?.inventory).toEqual(['medkit', 'sealant-foam', 'captain-keycard', 'insulated-wrench']);
+    expect(result.presentation.publicText).toContain('背包已经装不下');
+
+    npc!.inventory = ['medkit'];
+    result.session.world.activeActorId = 'npc-scavenger';
+    result.session.world.npcActionPoints = { 'npc-scavenger': 3 };
+    const collected = await applyParsedActionWithNpcAi(
+      result.session,
+      {
+        type: 'help',
+        rawIntent: '请求提示',
+        normalizedIntent: '请求提示',
+        targetLabel: '当前区域',
+        consumesTurn: false
+      },
+      () => 0.5,
+      async () => ({
+        intent: '拾取备用氧气罐',
+        actionType: 'inspect',
+        reason: '背包还有空间'
+      })
+    );
+
+    expect(collected.session.scenario.npcs?.[0]?.inventory).toContain('oxygen-canister');
+    expect(collected.resolution.stateChanges.join(' / ')).toContain('NPC获得');
+  });
+
+  it('lets NPCs use carried items when they are necessary', async () => {
+    const session = createNewSession({
+      templateId: 'submarine-escape',
+      archetypeId: 'engineer',
+      customBackground: '',
+      customTag: ''
+    });
+    session.world.oxygen = 3;
+    session.scenario.npcs = [
+      {
+        id: 'npc-supplier',
+        name: '补给员',
+        publicIdentity: '后勤接口人',
+        hiddenDrive: '保住可撤离窗口',
+        attitude: 'friendly',
+        locationId: session.player.locationId,
+        clue: '“氧气不能再拖。”',
+        status: '正在尝试建立合作。',
+        inventory: ['oxygen-canister']
+      }
+    ];
+    session.world.npcActionPoints = { 'npc-supplier': 3 };
+    session.world.turnOrder = [
+      { actorId: 'npc-supplier', actorLabel: '补给员', actorType: 'npc', initiative: 12 },
+      { actorId: 'player', actorLabel: session.player.archetypeLabel, actorType: 'player', initiative: 8 }
+    ];
+    session.world.activeActorId = 'npc-supplier';
+
+    const result = await applyParsedActionWithNpcAi(
+      session,
+      {
+        type: 'help',
+        rawIntent: '请求提示',
+        normalizedIntent: '请求提示',
+        targetLabel: '当前区域',
+        consumesTurn: false
+      },
+      () => 0.5,
+      async ({ observation }) => {
+        expect(observation.inventory).toEqual(['oxygen-canister']);
+        return {
+          intent: '使用氧气罐稳定局面',
+          actionType: 'use_item',
+          reason: '倒计时已经很低'
+        };
+      }
+    );
+
+    expect(result.session.world.oxygen).toBe(5);
+    expect(result.session.scenario.npcs?.[0]?.inventory).toEqual([]);
+    expect(result.resolution.stateChanges.join(' / ')).toContain('补给员使用便携氧气罐');
   });
 
   it('allows player to interact with an NPC in the same room', () => {

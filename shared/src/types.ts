@@ -193,6 +193,7 @@ export interface StoryNpc {
   locationId: LocationId;
   clue: string;
   status: string;
+  inventory?: ItemId[];
   motiveAnchor?: string;
   interactionTips?: string[];
   privateState?: {
@@ -333,6 +334,16 @@ export interface EventLogEntry {
   timestamp: string;
 }
 
+export interface PublicMessage {
+  id: string;
+  step: number;
+  speakerId: string;
+  speakerLabel: string;
+  speakerType: 'player' | 'npc' | 'system';
+  content: string;
+  timestamp: string;
+}
+
 export interface SaveMeta {
   sessionId: string;
   title: string;
@@ -353,6 +364,7 @@ export interface SessionSnapshot {
   world: WorldState;
   objectives: ObjectiveState;
   logTail: EventLogEntry[];
+  publicMessages: PublicMessage[];
 }
 
 export interface GameSession {
@@ -363,6 +375,7 @@ export interface GameSession {
   world: WorldState;
   objectives: ObjectiveState;
   eventLog: EventLogEntry[];
+  publicMessages: PublicMessage[];
   saveMeta: SaveMeta;
 }
 
@@ -513,6 +526,7 @@ export interface ActorObservation {
   inventory: ItemId[];
   availableActionsHint: string[];
   recentPublicEvents: string[];
+  publicMessages: PublicMessage[];
   privateBrief?: {
     coreGoal: string;
     shortTermGoal: string;
@@ -525,5 +539,6 @@ export interface ActorObservation {
 export interface NpcIntentDecision {
   intent: string;
   actionType?: ActionType;
+  publicMessage?: string;
   reason?: string;
 }
